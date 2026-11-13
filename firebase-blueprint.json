@@ -1,0 +1,307 @@
+{
+  "entities": {
+    "UserPublicProfile": {
+      "title": "UserPublicProfile",
+      "description": "Public non-PII engineering profile for an authenticated player.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID of the user."
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60,
+          "description": "Display callsign for mission control."
+        },
+        "missionsCompleted": {
+          "type": "number",
+          "description": "Total completed missions count."
+        },
+        "bestScore": {
+          "type": "number",
+          "description": "Highest achieved mission score (0-500)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": ["uid", "displayName", "missionsCompleted", "bestScore", "createdAt", "updatedAt"]
+    },
+    "UserPrivateInfo": {
+      "title": "UserPrivateInfo",
+      "description": "Isolated PII record accessible only by the account owner.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 160
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "email", "createdAt", "updatedAt"]
+    },
+    "DesignConfigMap": {
+      "title": "DesignConfigMap",
+      "description": "Structured spacecraft configuration snapshot for loading, sharing, and comparing missions.",
+      "type": "object",
+      "properties": {
+        "difficulty": { "type": "string", "enum": ["junior", "cadet", "engineer", "director", "sandbox"] },
+        "modelMode": { "type": "string", "enum": ["simplified", "realistic"] },
+        "constraintEventId": { "type": "string", "minLength": 1, "maxLength": 48 },
+        "objectiveId": { "type": "string", "minLength": 1, "maxLength": 48 },
+        "orbitId": { "type": "string", "minLength": 1, "maxLength": 48 },
+        "launchVehicleId": { "type": "string", "minLength": 1, "maxLength": 48 },
+        "busId": { "type": "string", "minLength": 1, "maxLength": 48 },
+        "propulsionId": { "type": "string", "minLength": 1, "maxLength": 48 },
+        "powerId": { "type": "string", "minLength": 1, "maxLength": 48 },
+        "batteryId": { "type": "string", "minLength": 1, "maxLength": 48 },
+        "commsId": { "type": "string", "minLength": 1, "maxLength": 48 },
+        "avionicsId": { "type": "string", "minLength": 1, "maxLength": 48 },
+        "adcsId": { "type": "string", "minLength": 1, "maxLength": 48 },
+        "shieldingId": { "type": "string", "minLength": 1, "maxLength": 48 },
+        "instrumentIds": { "type": "array" },
+        "solarSizing": { "type": "number" },
+        "propellantRatio": { "type": "number" }
+      },
+      "required": [
+        "difficulty", "modelMode", "constraintEventId", "objectiveId", "orbitId",
+        "launchVehicleId", "busId", "propulsionId", "powerId", "batteryId",
+        "commsId", "avionicsId", "adcsId", "shieldingId", "instrumentIds",
+        "solarSizing", "propellantRatio"
+      ]
+    },
+    "MissionRoom": {
+      "title": "MissionRoom",
+      "description": "Collaborative or competitive spacecraft design session supporting up to 4 participants.",
+      "type": "object",
+      "properties": {
+        "roomId": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 32,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "hostUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "status": {
+          "type": "string",
+          "enum": ["designing", "simulating", "debrief", "archived"]
+        },
+        "challengeMode": {
+          "type": "string",
+          "enum": ["cooperative", "competitive"]
+        },
+        "difficulty": {
+          "type": "string",
+          "enum": ["junior", "cadet", "engineer", "director", "sandbox"]
+        },
+        "modelMode": {
+          "type": "string",
+          "enum": ["simplified", "realistic"]
+        },
+        "constraintEventId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 48,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "runCount": { "type": "number" },
+        "memberCount": { "type": "number" },
+        "objectiveId": { "type": "string", "minLength": 1, "maxLength": 48, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "orbitId": { "type": "string", "minLength": 1, "maxLength": 48, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "launchVehicleId": { "type": "string", "minLength": 1, "maxLength": 48, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "busId": { "type": "string", "minLength": 1, "maxLength": 48, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "propulsionId": { "type": "string", "minLength": 1, "maxLength": 48, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "powerId": { "type": "string", "minLength": 1, "maxLength": 48, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "batteryId": { "type": "string", "minLength": 1, "maxLength": 48, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "commsId": { "type": "string", "minLength": 1, "maxLength": 48, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "avionicsId": { "type": "string", "minLength": 1, "maxLength": 48, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "adcsId": { "type": "string", "minLength": 1, "maxLength": 48, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "shieldingId": { "type": "string", "minLength": 1, "maxLength": 48, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "instrumentIds": {
+          "type": "array",
+          "description": "Bounded list of up to 4 selected science instrument IDs."
+        },
+        "solarSizing": { "type": "number" },
+        "propellantRatio": { "type": "number" },
+        "simulationSeed": { "type": "number" },
+        "finalScore": { "type": "number" },
+        "grade": { "type": "string", "maxLength": 4 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "roomId", "hostUid", "title", "status", "challengeMode", "difficulty", "modelMode", "constraintEventId",
+        "runCount", "memberCount", "objectiveId", "orbitId", "launchVehicleId", "busId",
+        "propulsionId", "powerId", "batteryId", "commsId", "avionicsId", "adcsId", "shieldingId",
+        "instrumentIds", "solarSizing", "propellantRatio",
+        "simulationSeed", "finalScore", "grade", "createdAt", "updatedAt"
+      ]
+    },
+    "RoomMember": {
+      "title": "RoomMember",
+      "description": "Participant seat in a collaborative mission room (max 4 members).",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "role": { "type": "string", "enum": ["director", "propulsion", "power", "payload"] },
+        "ready": { "type": "boolean" },
+        "joinedAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName", "role", "ready", "joinedAt", "updatedAt"]
+    },
+    "RoomMessage": {
+      "title": "RoomMessage",
+      "description": "Engineering decision log or team chat entry in a mission room.",
+      "type": "object",
+      "properties": {
+        "senderUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "senderName": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "role": { "type": "string", "enum": ["director", "propulsion", "power", "payload"] },
+        "text": { "type": "string", "minLength": 1, "maxLength": 280 },
+        "kind": { "type": "string", "enum": ["chat", "change", "signoff"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["senderUid", "senderName", "role", "text", "kind", "createdAt"]
+    },
+    "MissionRecord": {
+      "title": "MissionRecord",
+      "description": "Persisted mission simulation evaluation and score record.",
+      "type": "object",
+      "properties": {
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerName": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "mode": { "type": "string", "enum": ["solo", "team"] },
+        "difficulty": { "type": "string", "enum": ["junior", "cadet", "engineer", "director", "sandbox"] },
+        "roomId": { "type": "string", "maxLength": 32 },
+        "objectiveId": { "type": "string", "minLength": 1, "maxLength": 48, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "objectiveTitle": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "orbitId": { "type": "string", "minLength": 1, "maxLength": 48, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "launchVehicleId": { "type": "string", "minLength": 1, "maxLength": 48, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "totalScore": { "type": "number" },
+        "grade": { "type": "string", "enum": ["S", "A", "B", "C", "F"] },
+        "scienceScore": { "type": "number" },
+        "marginScore": { "type": "number" },
+        "budgetScore": { "type": "number" },
+        "synergyScore": { "type": "number" },
+        "collabScore": { "type": "number" },
+        "massKg": { "type": "number" },
+        "costM": { "type": "number" },
+        "powerMarginW": { "type": "number" },
+        "lifetimeMonths": { "type": "number" },
+        "designConfig": { "$ref": "#/entities/DesignConfigMap" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "ownerUid", "ownerName", "mode", "difficulty", "roomId", "objectiveId", "objectiveTitle",
+        "orbitId", "launchVehicleId", "totalScore", "grade", "scienceScore",
+        "marginScore", "budgetScore", "synergyScore", "collabScore",
+        "massKg", "costM", "powerMarginW", "lifetimeMonths", "designConfig", "createdAt"
+      ]
+    },
+    "LeaderboardEntry": {
+      "title": "LeaderboardEntry",
+      "description": "Public non-PII mission ranking entry supporting solo & team competitive objective challenges.",
+      "type": "object",
+      "properties": {
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "pilotName": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "teamName": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "mode": { "type": "string", "enum": ["solo", "team"] },
+        "challengeMode": { "type": "string", "enum": ["cooperative", "competitive"] },
+        "difficulty": { "type": "string", "enum": ["junior", "cadet", "engineer", "director", "sandbox"] },
+        "objectiveId": { "type": "string", "minLength": 1, "maxLength": 48, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "objectiveTitle": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "orbitId": { "type": "string", "minLength": 1, "maxLength": 48, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "launchVehicleId": { "type": "string", "minLength": 1, "maxLength": 48, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "totalScore": { "type": "number" },
+        "grade": { "type": "string", "enum": ["S", "A", "B", "C", "F"] },
+        "scienceScore": { "type": "number" },
+        "marginScore": { "type": "number" },
+        "budgetScore": { "type": "number" },
+        "synergyScore": { "type": "number" },
+        "collabScore": { "type": "number" },
+        "massKg": { "type": "number" },
+        "costM": { "type": "number" },
+        "powerMarginW": { "type": "number" },
+        "lifetimeMonths": { "type": "number" },
+        "designConfig": { "$ref": "#/entities/DesignConfigMap" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "ownerUid", "pilotName", "teamName", "mode", "challengeMode", "difficulty",
+        "objectiveId", "objectiveTitle", "orbitId", "launchVehicleId",
+        "totalScore", "grade", "scienceScore", "marginScore", "budgetScore",
+        "synergyScore", "collabScore", "massKg", "costM", "powerMarginW",
+        "lifetimeMonths", "designConfig", "createdAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserPublicProfile" },
+      "description": "Public non-PII user statistics and display callsign."
+    },
+    "/users/{userId}/private/{docId}": {
+      "schema": { "$ref": "#/entities/UserPrivateInfo" },
+      "description": "Owner-only PII record storing verified email."
+    },
+    "/rooms/{roomId}": {
+      "schema": { "$ref": "#/entities/MissionRoom" },
+      "description": "Collaborative or competitive mission design room state (max 4 participants)."
+    },
+    "/rooms/{roomId}/members/{memberUid}": {
+      "schema": { "$ref": "#/entities/RoomMember" },
+      "description": "Active team member role and readiness state inside a room."
+    },
+    "/rooms/{roomId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/RoomMessage" },
+      "description": "Team engineering chat and automated change/sign-off feed."
+    },
+    "/missions/{missionId}": {
+      "schema": { "$ref": "#/entities/MissionRecord" },
+      "description": "Saved mission evaluation results owned by the authenticated player."
+    },
+    "/leaderboard/{entryId}": {
+      "schema": { "$ref": "#/entities/LeaderboardEntry" },
+      "description": "Public mission rankings and competitive team challenge scores."
+    }
+  }
+}

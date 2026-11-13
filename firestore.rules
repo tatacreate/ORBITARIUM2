@@ -1,0 +1,415 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isRoomMember(roomId) {
+      return isSignedIn() && exists(/databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid));
+    }
+
+    function isValidUserPublic(data, userId) {
+      return data.keys().hasAll(['uid', 'displayName', 'missionsCompleted', 'bestScore', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'missionsCompleted', 'bestScore', 'createdAt', 'updatedAt'])
+        && data.uid is string && data.uid == userId && isValidId(data.uid)
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 60
+        && data.missionsCompleted is number && data.missionsCompleted >= 0 && data.missionsCompleted <= 100000
+        && data.bestScore is number && data.bestScore >= 0 && data.bestScore <= 500
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidUserPrivate(data, userId) {
+      return data.keys().hasAll(['uid', 'email', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'email', 'createdAt', 'updatedAt'])
+        && data.uid is string && data.uid == userId && isValidId(data.uid)
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 160
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidInstrumentId(val) {
+      return val is string && val.size() >= 1 && val.size() <= 48 && val.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidInstrumentList(list) {
+      return list is list && list.size() <= 4
+        && (list.size() < 1 || isValidInstrumentId(list[0]))
+        && (list.size() < 2 || isValidInstrumentId(list[1]))
+        && (list.size() < 3 || isValidInstrumentId(list[2]))
+        && (list.size() < 4 || isValidInstrumentId(list[3]));
+    }
+
+    function isValidDesignConfig(cfg) {
+      return cfg is map
+        && cfg.keys().hasAll([
+          'difficulty', 'modelMode', 'constraintEventId', 'objectiveId', 'orbitId',
+          'launchVehicleId', 'busId', 'propulsionId', 'powerId', 'batteryId',
+          'commsId', 'avionicsId', 'adcsId', 'shieldingId', 'instrumentIds',
+          'solarSizing', 'propellantRatio'
+        ])
+        && cfg.keys().hasOnly([
+          'difficulty', 'modelMode', 'constraintEventId', 'objectiveId', 'orbitId',
+          'launchVehicleId', 'busId', 'propulsionId', 'powerId', 'batteryId',
+          'commsId', 'avionicsId', 'adcsId', 'shieldingId', 'instrumentIds',
+          'solarSizing', 'propellantRatio'
+        ])
+        && cfg.difficulty in ['junior', 'cadet', 'engineer', 'director', 'sandbox']
+        && cfg.modelMode in ['simplified', 'realistic']
+        && isValidInstrumentId(cfg.constraintEventId)
+        && isValidInstrumentId(cfg.objectiveId)
+        && isValidInstrumentId(cfg.orbitId)
+        && isValidInstrumentId(cfg.launchVehicleId)
+        && isValidInstrumentId(cfg.busId)
+        && isValidInstrumentId(cfg.propulsionId)
+        && isValidInstrumentId(cfg.powerId)
+        && isValidInstrumentId(cfg.batteryId)
+        && isValidInstrumentId(cfg.commsId)
+        && isValidInstrumentId(cfg.avionicsId)
+        && isValidInstrumentId(cfg.adcsId)
+        && isValidInstrumentId(cfg.shieldingId)
+        && isValidInstrumentList(cfg.instrumentIds)
+        && cfg.solarSizing is number && cfg.solarSizing >= 0.5 && cfg.solarSizing <= 2.0
+        && cfg.propellantRatio is number && cfg.propellantRatio >= 0.5 && cfg.propellantRatio <= 1.5;
+    }
+
+    function isValidRoom(data, roomId) {
+      return data.keys().hasAll([
+          'roomId', 'hostUid', 'title', 'status', 'challengeMode', 'difficulty', 'modelMode', 'constraintEventId',
+          'runCount', 'memberCount', 'objectiveId', 'orbitId', 'launchVehicleId', 'busId',
+          'propulsionId', 'powerId', 'batteryId', 'commsId', 'avionicsId', 'adcsId', 'shieldingId',
+          'instrumentIds', 'solarSizing', 'propellantRatio',
+          'simulationSeed', 'finalScore', 'grade', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'roomId', 'hostUid', 'title', 'status', 'challengeMode', 'difficulty', 'modelMode', 'constraintEventId',
+          'runCount', 'memberCount', 'objectiveId', 'orbitId', 'launchVehicleId', 'busId',
+          'propulsionId', 'powerId', 'batteryId', 'commsId', 'avionicsId', 'adcsId', 'shieldingId',
+          'instrumentIds', 'solarSizing', 'propellantRatio',
+          'simulationSeed', 'finalScore', 'grade', 'createdAt', 'updatedAt'
+        ])
+        && data.roomId is string && data.roomId == roomId && data.roomId.size() >= 4 && data.roomId.size() <= 32
+        && data.hostUid is string && isValidId(data.hostUid)
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 80
+        && data.status in ['designing', 'simulating', 'debrief', 'archived']
+        && data.challengeMode in ['cooperative', 'competitive']
+        && data.difficulty in ['junior', 'cadet', 'engineer', 'director', 'sandbox']
+        && data.modelMode in ['simplified', 'realistic']
+        && isValidInstrumentId(data.constraintEventId)
+        && data.runCount is number && data.runCount >= 1 && data.runCount <= 500
+        && data.memberCount is number && data.memberCount >= 1 && data.memberCount <= 4
+        && isValidInstrumentId(data.objectiveId)
+        && isValidInstrumentId(data.orbitId)
+        && isValidInstrumentId(data.launchVehicleId)
+        && isValidInstrumentId(data.busId)
+        && isValidInstrumentId(data.propulsionId)
+        && isValidInstrumentId(data.powerId)
+        && isValidInstrumentId(data.batteryId)
+        && isValidInstrumentId(data.commsId)
+        && isValidInstrumentId(data.avionicsId)
+        && isValidInstrumentId(data.adcsId)
+        && isValidInstrumentId(data.shieldingId)
+        && isValidInstrumentList(data.instrumentIds)
+        && data.solarSizing is number && data.solarSizing >= 0.5 && data.solarSizing <= 2.0
+        && data.propellantRatio is number && data.propellantRatio >= 0.5 && data.propellantRatio <= 1.5
+        && data.simulationSeed is number && data.simulationSeed >= 0 && data.simulationSeed <= 999999999
+        && data.finalScore is number && data.finalScore >= 0 && data.finalScore <= 500
+        && data.grade is string && data.grade.size() >= 1 && data.grade.size() <= 4
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidMember(data, memberUid) {
+      return data.keys().hasAll(['uid', 'displayName', 'role', 'ready', 'joinedAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'role', 'ready', 'joinedAt', 'updatedAt'])
+        && data.uid is string && data.uid == memberUid && isValidId(data.uid)
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 60
+        && data.role in ['director', 'propulsion', 'power', 'payload']
+        && data.ready is bool
+        && data.joinedAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidMessage(data) {
+      return data.keys().hasAll(['senderUid', 'senderName', 'role', 'text', 'kind', 'createdAt'])
+        && data.keys().hasOnly(['senderUid', 'senderName', 'role', 'text', 'kind', 'createdAt'])
+        && data.senderUid is string && data.senderUid == request.auth.uid && isValidId(data.senderUid)
+        && data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 60
+        && data.role in ['director', 'propulsion', 'power', 'payload']
+        && data.text is string && data.text.size() >= 1 && data.text.size() <= 280
+        && data.kind in ['chat', 'change', 'signoff']
+        && data.createdAt is timestamp;
+    }
+
+    function isValidMissionRecord(data) {
+      return data.keys().hasAll([
+          'ownerUid', 'ownerName', 'mode', 'difficulty', 'roomId', 'objectiveId', 'objectiveTitle',
+          'orbitId', 'launchVehicleId', 'totalScore', 'grade', 'scienceScore',
+          'marginScore', 'budgetScore', 'synergyScore', 'collabScore',
+          'massKg', 'costM', 'powerMarginW', 'lifetimeMonths', 'designConfig', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerUid', 'ownerName', 'mode', 'difficulty', 'roomId', 'objectiveId', 'objectiveTitle',
+          'orbitId', 'launchVehicleId', 'totalScore', 'grade', 'scienceScore',
+          'marginScore', 'budgetScore', 'synergyScore', 'collabScore',
+          'massKg', 'costM', 'powerMarginW', 'lifetimeMonths', 'designConfig', 'createdAt'
+        ])
+        && data.ownerUid is string && data.ownerUid == request.auth.uid && isValidId(data.ownerUid)
+        && data.ownerName is string && data.ownerName.size() >= 1 && data.ownerName.size() <= 60
+        && data.mode in ['solo', 'team']
+        && data.difficulty in ['junior', 'cadet', 'engineer', 'director', 'sandbox']
+        && data.roomId is string && data.roomId.size() <= 32
+        && isValidInstrumentId(data.objectiveId)
+        && data.objectiveTitle is string && data.objectiveTitle.size() >= 1 && data.objectiveTitle.size() <= 80
+        && isValidInstrumentId(data.orbitId)
+        && isValidInstrumentId(data.launchVehicleId)
+        && data.totalScore is number && data.totalScore >= 0 && data.totalScore <= 500
+        && data.grade in ['S', 'A', 'B', 'C', 'F']
+        && data.scienceScore is number && data.scienceScore >= 0 && data.scienceScore <= 100
+        && data.marginScore is number && data.marginScore >= 0 && data.marginScore <= 100
+        && data.budgetScore is number && data.budgetScore >= 0 && data.budgetScore <= 100
+        && data.synergyScore is number && data.synergyScore >= 0 && data.synergyScore <= 100
+        && data.collabScore is number && data.collabScore >= 0 && data.collabScore <= 100
+        && data.massKg is number && data.massKg >= 0 && data.massKg <= 200000
+        && data.costM is number && data.costM >= 0 && data.costM <= 10000
+        && data.powerMarginW is number && data.powerMarginW >= -10000 && data.powerMarginW <= 50000
+        && data.lifetimeMonths is number && data.lifetimeMonths >= 0 && data.lifetimeMonths <= 600
+        && isValidDesignConfig(data.designConfig)
+        && data.createdAt is timestamp;
+    }
+
+    function isValidLeaderboardEntry(data) {
+      return data.keys().hasAll([
+          'ownerUid', 'pilotName', 'teamName', 'mode', 'challengeMode', 'difficulty',
+          'objectiveId', 'objectiveTitle', 'orbitId', 'launchVehicleId',
+          'totalScore', 'grade', 'scienceScore', 'marginScore', 'budgetScore',
+          'synergyScore', 'collabScore', 'massKg', 'costM', 'powerMarginW',
+          'lifetimeMonths', 'designConfig', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerUid', 'pilotName', 'teamName', 'mode', 'challengeMode', 'difficulty',
+          'objectiveId', 'objectiveTitle', 'orbitId', 'launchVehicleId',
+          'totalScore', 'grade', 'scienceScore', 'marginScore', 'budgetScore',
+          'synergyScore', 'collabScore', 'massKg', 'costM', 'powerMarginW',
+          'lifetimeMonths', 'designConfig', 'createdAt'
+        ])
+        && data.ownerUid is string && data.ownerUid == request.auth.uid && isValidId(data.ownerUid)
+        && data.pilotName is string && data.pilotName.size() >= 1 && data.pilotName.size() <= 60
+        && data.teamName is string && data.teamName.size() >= 1 && data.teamName.size() <= 60
+        && data.mode in ['solo', 'team']
+        && data.challengeMode in ['cooperative', 'competitive']
+        && data.difficulty in ['junior', 'cadet', 'engineer', 'director', 'sandbox']
+        && isValidInstrumentId(data.objectiveId)
+        && data.objectiveTitle is string && data.objectiveTitle.size() >= 1 && data.objectiveTitle.size() <= 80
+        && isValidInstrumentId(data.orbitId)
+        && isValidInstrumentId(data.launchVehicleId)
+        && data.totalScore is number && data.totalScore >= 0 && data.totalScore <= 500
+        && data.grade in ['S', 'A', 'B', 'C', 'F']
+        && data.scienceScore is number && data.scienceScore >= 0 && data.scienceScore <= 100
+        && data.marginScore is number && data.marginScore >= 0 && data.marginScore <= 100
+        && data.budgetScore is number && data.budgetScore >= 0 && data.budgetScore <= 100
+        && data.synergyScore is number && data.synergyScore >= 0 && data.synergyScore <= 100
+        && data.collabScore is number && data.collabScore >= 0 && data.collabScore <= 100
+        && data.massKg is number && data.massKg >= 0 && data.massKg <= 200000
+        && data.costM is number && data.costM >= 0 && data.costM <= 10000
+        && data.powerMarginW is number && data.powerMarginW >= -10000 && data.powerMarginW <= 50000
+        && data.lifetimeMonths is number && data.lifetimeMonths >= 0 && data.lifetimeMonths <= 600
+        && isValidDesignConfig(data.designConfig)
+        && data.createdAt is timestamp;
+    }
+
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId);
+      allow list: if isSignedIn() && resource.data.uid == request.auth.uid;
+      allow create: if isVerified() && isValidId(userId) && request.auth.uid == userId
+        && isValidUserPublic(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerified() && isValidId(userId) && request.auth.uid == userId
+        && isValidUserPublic(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'missionsCompleted', 'bestScore', 'updatedAt']);
+
+      match /private/{docId} {
+        allow get: if isSignedIn() && isValidId(userId) && isValidId(docId) && request.auth.uid == userId;
+        allow create: if isVerified() && isValidId(userId) && isValidId(docId) && request.auth.uid == userId
+          && isValidUserPrivate(incoming(), userId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time;
+        allow update: if isVerified() && isValidId(userId) && isValidId(docId) && request.auth.uid == userId
+          && isValidUserPrivate(incoming(), userId)
+          && incoming().uid == existing().uid
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['email', 'updatedAt']);
+      }
+    }
+
+    match /rooms/{roomId} {
+      allow get: if isSignedIn() && isValidId(roomId);
+      allow list: if isSignedIn() && resource.data.hostUid == request.auth.uid;
+      allow create: if isVerified() && isValidId(roomId)
+        && isValidRoom(incoming(), roomId)
+        && incoming().hostUid == request.auth.uid
+        && incoming().status == 'designing'
+        && incoming().runCount == 1
+        && incoming().memberCount == 1
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && existsAfter(/databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid));
+
+      allow update: if isVerified() && isValidId(roomId)
+        && isValidRoom(incoming(), roomId)
+        && existing().status != 'archived'
+        && incoming().roomId == existing().roomId
+        && incoming().hostUid == existing().hostUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Action: Join Room (up to 4 members)
+          (
+            !isRoomMember(roomId)
+            && existing().status == 'designing'
+            && existing().memberCount < 4
+            && incoming().memberCount == existing().memberCount + 1
+            && incoming().diff(existing()).affectedKeys().hasOnly(['memberCount', 'updatedAt'])
+            && existsAfter(/databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid))
+          )
+          ||
+          // Action: Edit Spacecraft Configuration (Room Members during designing)
+          (
+            isRoomMember(roomId)
+            && existing().status == 'designing'
+            && incoming().status == 'designing'
+            && incoming().memberCount == existing().memberCount
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'difficulty', 'modelMode', 'constraintEventId',
+              'objectiveId', 'orbitId', 'launchVehicleId', 'busId',
+              'propulsionId', 'powerId', 'batteryId', 'commsId',
+              'avionicsId', 'adcsId', 'shieldingId',
+              'instrumentIds', 'solarSizing', 'propellantRatio', 'updatedAt'
+            ])
+          )
+          ||
+          // Action: Start Simulation (Room Member)
+          (
+            isRoomMember(roomId)
+            && existing().status == 'designing'
+            && incoming().status == 'simulating'
+            && incoming().memberCount == existing().memberCount
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'simulationSeed', 'updatedAt'])
+          )
+          ||
+          // Action: Enter Debrief after Simulation
+          (
+            isRoomMember(roomId)
+            && existing().status == 'simulating'
+            && incoming().status == 'debrief'
+            && incoming().memberCount == existing().memberCount
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'finalScore', 'grade', 'updatedAt'])
+          )
+          ||
+          // Action: Iterate Design from Debrief (increment runCount)
+          (
+            isRoomMember(roomId)
+            && existing().status == 'debrief'
+            && incoming().status == 'designing'
+            && incoming().runCount == existing().runCount + 1
+            && incoming().memberCount == existing().memberCount
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'runCount', 'updatedAt'])
+          )
+          ||
+          // Action: Archive Room (Terminal Lock)
+          (
+            isRoomMember(roomId)
+            && existing().hostUid == request.auth.uid
+            && incoming().status == 'archived'
+            && incoming().memberCount == existing().memberCount
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          )
+        );
+
+      match /members/{memberUid} {
+        allow get: if isRoomMember(roomId) && isValidId(memberUid);
+        allow list: if isRoomMember(roomId);
+        allow create: if isVerified() && isValidId(roomId) && isValidId(memberUid)
+          && memberUid == request.auth.uid
+          && isValidMember(incoming(), memberUid)
+          && incoming().joinedAt == request.time
+          && incoming().updatedAt == request.time
+          && (
+            (
+              !exists(/databases/$(database)/documents/rooms/$(roomId))
+              && getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.hostUid == request.auth.uid
+              && getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.memberCount == 1
+            )
+            ||
+            (
+              exists(/databases/$(database)/documents/rooms/$(roomId))
+              && getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.memberCount == get(/databases/$(database)/documents/rooms/$(roomId)).data.memberCount + 1
+              && getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.memberCount <= 4
+            )
+          );
+        allow update: if isVerified() && isValidId(roomId) && isValidId(memberUid)
+          && memberUid == request.auth.uid
+          && isRoomMember(roomId)
+          && isValidMember(incoming(), memberUid)
+          && incoming().uid == existing().uid
+          && incoming().joinedAt == existing().joinedAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'role', 'ready', 'updatedAt']);
+      }
+
+      match /messages/{messageId} {
+        allow get: if isRoomMember(roomId) && isValidId(messageId);
+        allow list: if isRoomMember(roomId);
+        allow create: if isVerified() && isValidId(roomId) && isValidId(messageId)
+          && isRoomMember(roomId)
+          && isValidMessage(incoming())
+          && incoming().createdAt == request.time;
+      }
+    }
+
+    match /missions/{missionId} {
+      allow get: if isSignedIn() && isValidId(missionId) && resource.data.ownerUid == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+      allow create: if isVerified() && isValidId(missionId)
+        && isValidMissionRecord(incoming())
+        && incoming().createdAt == request.time;
+      allow delete: if isVerified() && isValidId(missionId) && resource.data.ownerUid == request.auth.uid;
+    }
+
+    match /leaderboard/{entryId} {
+      allow get: if isSignedIn() && isValidId(entryId);
+      allow list: if isSignedIn();
+      allow create: if isVerified() && isValidId(entryId)
+        && isValidLeaderboardEntry(incoming())
+        && incoming().createdAt == request.time;
+      allow delete: if isVerified() && isValidId(entryId) && resource.data.ownerUid == request.auth.uid;
+    }
+  }
+}
