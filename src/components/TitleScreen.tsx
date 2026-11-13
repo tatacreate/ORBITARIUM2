@@ -128,17 +128,17 @@ export function TitleScreen({
         </div>
 
         <p className="mt-4 text-sm md:text-base leading-relaxed text-slate-300">
-          Architect complete space missions in real-time 3D. Balance orbital delta-v, inverse-square solar power, radiation shielding, and deep-space data links solo or with a four-engineer team.
+          Design, build, launch, and fly your own spacecraft across 5 interactive mission phases. Balance real physics trade-offs in 3D solo or with a 4-person NASA-style flight team.
         </p>
 
         {/* Difficulty Selector */}
         <div className="mt-5">
           <div className="text-[11px] font-mono-tab uppercase tracking-wider text-slate-400 mb-2">
-            Difficulty Preset
+            Difficulty Mode
           </div>
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5">
-            {(['junior', 'cadet', 'engineer', 'director', 'sandbox'] as DifficultyLevel[]).map((level) => {
-              const active = difficulty === level;
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+            {(['cadet', 'engineer', 'director', 'sandbox'] as DifficultyLevel[]).map((level) => {
+              const active = difficulty === level || (level === 'cadet' && difficulty === 'junior');
               return (
                 <button
                   key={level}
@@ -150,7 +150,7 @@ export function TitleScreen({
                       : 'border-slate-800 bg-slate-900/70 text-slate-400 hover:text-white'
                   }`}
                 >
-                  {level === 'junior' ? 'Junior (5-13)' : DIFFICULTY_MODES[level].label.split(' ')[0]}
+                  {DIFFICULTY_MODES[level].shortLabel}
                 </button>
               );
             })}

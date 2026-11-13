@@ -15,9 +15,6 @@ import {
   SHIELDING_SYSTEMS,
 } from '../data/catalog';
 import type {
-  AdcsSpec,
-  AvionicsSpec,
-  BatterySpec,
   ConstraintStatus,
   CriterionCheck,
   EngineeringAdvisory,
@@ -25,6 +22,7 @@ import type {
   MissionConfig,
   SimulationOutcome,
   TelemetryReport,
+  TradeOffPopup,
 } from '../types/mission';
 
 const G0 = 9.80665;
@@ -161,7 +159,10 @@ export function computeTelemetry(config: MissionConfig): TelemetryReport {
 
   let powerGeneratedW = 0;
   if (power.kind === 'solar') {
-    const eclipsePenalty = Math.max(0.65, 1 - orbit.eclipseFraction * (0.45 * (120 / Math.max(60, battery.capacityWh))));
+    const eclipsePenalty = Math.max(
+      0.65,
+      1 - orbit.eclipseFraction * (0.45 * (120 / Math.max(60, battery.capacityWh))),
+    );
     powerGeneratedW = Math.round(
       power.baseOutputWAt1AU * config.solarSizing * solarFluxFactor * eclipsePenalty,
     );
@@ -204,9 +205,10 @@ export function computeTelemetry(config: MissionConfig): TelemetryReport {
     320,
     comms.baseRateMbpsAt1AU * pathFactor * pointingPenalty,
   );
-  const downlinkCapacityGBDay = Number(
-    ((effectiveMbps * 3600 * 8) / 8000).toFixed(1),
-  );
+  const downlinkMbps = Number(effectiveMbps.toFixed(1));
+  const dataRateMbps = Number(((dataGeneratedGBDay * 8000) / (3600 * 8)).toFixed(1));
+  const downlinkCapacityGBDay = Number(((effectiveMbps * 3600 * 8) / 8000).toFixed(1));
+  const commsDelaySec = Number((orbit.commsDistanceAU * 499).toFixed(2));
 
   const linkMarginDb = Number(
     (
@@ -230,6 +232,7 @@ export function computeTelemetry(config: MissionConfig): TelemetryReport {
   const dvReserveRatio = availableDeltaVKms / Math.max(0.1, requiredDeltaVKms);
   const propLifetimeMonths = Math.round(36 * Math.min(2.2, Math.max(0.15, dvReserveRatio)));
   const estimatedLifetimeMonths = Math.min(72, Math.min(radLifetimeMonths, propLifetimeMonths));
+  const estimatedLifetimeYears = Number((estimatedLifetimeMonths / 12).toFixed(1));
 
   // 6. Status Classifications
   const budgetStatus: ConstraintStatus =
@@ -387,11 +390,11 @@ export function computeTelemetry(config: MissionConfig): TelemetryReport {
         'Your instruments and comms draw more watts than your power source generates. Far from the Sun, sunlight drops by 1/r².',
       quickFix: suggestNuclear
         ? {
-            label: 'Switch to MMRTG Nuclear Battery',
+            label: 'Switch to RTG Nuclear Battery',
             patch: { powerId: 'mmrtg-nuclear' },
           }
         : {
-            label: 'Upgrade to Mega-Flex Solar',
+            label: 'Upgrade to Deployable Wings',
             patch: { powerId: 'ultraflex-array', solarSizing: 1.4 },
           },
     });
@@ -415,11 +418,11 @@ export function computeTelemetry(config: MissionConfig): TelemetryReport {
       id: 'laser-pointing',
       severity: 'warning',
       subsystem: 'power',
-      message: `Optical Laser needs <=15" pointing; ${bus.name} is ${bus.pointingAccuracyArcsec}".`,
+      message: `Laser Comms needs <=15" pointing; ${bus.name} is ${bus.pointingAccuracyArcsec}".`,
       plainTerms:
-        'Space lasers shoot a tiny beam across millions of kilometers and require a stable Octagonal or Hex-Core spacecraft bus.',
+        'Space lasers shoot a tiny beam across millions of kilometers and require a stable Medium Explorer or Heavy Bus.',
       quickFix: {
-        label: 'Upgrade to Octagonal Bus',
+        label: 'Upgrade to Medium Explorer Bus',
         patch: { busId: 'octa-probe' },
       },
     });
@@ -433,7 +436,7 @@ export function computeTelemetry(config: MissionConfig): TelemetryReport {
       plainTerms:
         'Your science instruments collect more data than your antenna can transmit home each day.',
       quickFix: {
-        label: 'Equip 2.4m Ka-Band Dish',
+        label: 'Equip High-Gain Dish',
         patch: { commsId: 'kaband-hga' },
       },
     });
@@ -510,9 +513,13 @@ export function computeTelemetry(config: MissionConfig): TelemetryReport {
     powerStatus,
     dataGeneratedGBDay,
     downlinkCapacityGBDay,
+    dataRateMbps,
+    downlinkMbps,
+    commsDelaySec,
     linkMarginDb,
     dataStatus,
     estimatedLifetimeMonths,
+    estimatedLifetimeYears,
     requiredLifetimeMonths: objective.minLifetimeMonths,
     lifetimeStatus,
     scienceReturnPotential,
@@ -523,208 +530,343 @@ export function computeTelemetry(config: MissionConfig): TelemetryReport {
   };
 }
 
+export function buildTradeOffPopup(
+  prevConfig: MissionConfig,
+  nextConfig: MissionConfig,
+  partTitle: string,
+): TradeOffPopup | null {
+  const prev = computeTelemetry(prevConfig);
+  const next = computeTelemetry(nextConfig);
+
+  const costDiff = Number((next.totalCostM - prev.totalCostM).toFixed(1));
+  const massDiff = Math.round(next.wetMassKg - prev.wetMassKg);
+  const powerDiff = Math.round(next.powerMarginW - prev.powerMarginW);
+  const sciDiff = Math.round(next.scienceReturnPotential - prev.scienceReturnPotential);
+  const dlDiff = Number((next.downlinkMbps - prev.downlinkMbps).toFixed(1));
+  const dataDiff = Number((next.dataGeneratedGBDay - prev.dataGeneratedGBDay).toFixed(1));
+
+  const deltas: TradeOffPopup['deltas'] = [];
+  if (sciDiff !== 0) {
+    deltas.push({
+      label: `${sciDiff > 0 ? '+' : ''}${sciDiff} Science`,
+      tone: sciDiff > 0 ? 'good' : 'warn',
+    });
+  }
+  if (massDiff !== 0) {
+    deltas.push({
+      label: `${massDiff > 0 ? '+' : ''}${massDiff} kg Mass`,
+      tone: massDiff <= 0 ? 'good' : next.massStatus === 'Critical' ? 'warn' : 'neutral',
+    });
+  }
+  if (powerDiff !== 0) {
+    deltas.push({
+      label: `${powerDiff > 0 ? '+' : ''}${powerDiff} W Margin`,
+      tone: powerDiff > 0 ? 'good' : next.powerStatus === 'Critical' ? 'warn' : 'neutral',
+    });
+  }
+  if (costDiff !== 0) {
+    deltas.push({
+      label: `${costDiff > 0 ? '+' : ''}$${costDiff}M`,
+      tone: costDiff <= 0 ? 'good' : next.budgetStatus === 'Critical' ? 'warn' : 'neutral',
+    });
+  }
+  if (dlDiff !== 0) {
+    deltas.push({
+      label: `${dlDiff > 0 ? '+' : ''}${dlDiff} Mbps Link`,
+      tone: dlDiff > 0 ? 'good' : 'warn',
+    });
+  }
+  if (dataDiff !== 0) {
+    deltas.push({
+      label: `${dataDiff > 0 ? '+' : ''}${dataDiff} GB/d Data`,
+      tone: dataDiff > 0 && next.dataStatus === 'Critical' ? 'warn' : 'neutral',
+    });
+  }
+
+  if (deltas.length === 0) return null;
+
+  let summary = `Updated ${partTitle}.`;
+  if (next.massStatus === 'Critical' && prev.massStatus !== 'Critical') {
+    summary = `Heads up! Adding ${partTitle} pushed spacecraft weight over your rocket's limit—upgrade your rocket in Phase 3 or trim mass.`;
+  } else if (next.powerStatus === 'Critical' && prev.powerStatus !== 'Critical') {
+    summary = `Power alert! ${partTitle} draws more watts than your solar/RTG supply generates—boost your power system to keep instruments running.`;
+  } else if (next.dataStatus === 'Critical' && prev.dataStatus !== 'Critical') {
+    summary = `Data bottleneck! ${partTitle} creates more daily science data than your current antenna can send home.`;
+  } else if (sciDiff > 0 && (massDiff > 0 || powerDiff < 0)) {
+    summary = `${partTitle} boosts Science Value +${sciDiff}, while trading +${Math.max(0, massDiff)} kg mass and ${Math.abs(powerDiff)} W power reserve.`;
+  } else if (powerDiff > 0 && massDiff > 0) {
+    summary = `${partTitle} adds +${powerDiff} W electrical reserve for +${massDiff} kg mass.`;
+  } else if (dlDiff > 0) {
+    summary = `${partTitle} speeds up your Earth downlink by +${dlDiff} Mbps so high-res data streams home cleanly.`;
+  }
+
+  return {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    title: partTitle,
+    summary,
+    deltas: deltas.slice(0, 4),
+  };
+}
+
 export function generateFlightAnomalies(config: MissionConfig, seed: number): FlightAnomaly[] {
   const { objective, orbit, power, comms, propulsion } = getCatalogParts(config);
   const pickSolar = power.kind === 'solar';
   const isDeep = orbit.solarDistanceAU >= 1.5;
 
-  const cruisePool: FlightAnomaly[] = [
+  const anomaly1Pool: FlightAnomaly[] = [
     pickSolar
       ? {
-          id: 'solar-storm-eclipse',
+          id: `solar-flare-${seed % 100}`,
           phaseIndex: 1,
+          triggerProgress: 0.28,
           leadRole: 'power',
           title: isDeep
-            ? 'Solar Irradiance Attenuation & Thermal Cold-Soak'
-            : 'Coronal Mass Ejection (CME) Particle Surge',
+            ? 'Solar Dust Storm & Irradiance Drop'
+            : 'Solar Flare Incoming!',
           description: isDeep
-            ? `At ${orbit.solarDistanceAU} AU, unexpected dust/plasma scattering reduces array output by 22% during cruise.`
-            : 'An X-class solar flare is inbound, threatening exposed avionics and attitude sensors.',
+            ? `At ${orbit.solarDistanceAU} AU, plasma scattering cuts solar wing output by 20% during deep-space cruise.`
+            : 'An X-class solar flare is racing toward your spacecraft! Radiation spikes can scramble electronics.',
           choices: [
             {
               id: 'safe-mode',
-              label: 'Throttle Payload & Enter Rad-Safe Attitude',
-              detail: 'Preserve spacecraft health & margin (+12 Margin, -4 Science).',
+              label: 'Put Instruments in Safe Mode',
+              detail: 'Protects batteries & electronics (+12 Margin, -4 Science).',
               whyItMatters:
-                'Turning off power-hungry cameras briefly keeps onboard batteries charged and shields delicate sensors from radiation spikes.',
+                'Powering down sensitive cameras during a solar storm prevents electrical shorts and keeps batteries healthy.',
               scienceDelta: -4,
               marginDelta: 12,
               collabDelta: 8,
+              powerShiftW: 55,
             },
             {
               id: 'burn-through',
-              label: 'Maintain Full Science Observation',
-              detail: 'Capture rare flare telemetry at the cost of power reserve (+10 Science, -10 Margin).',
+              label: 'Keep Recording Science Data',
+              detail: 'Captures rare solar storm readings, drains power (+10 Science, -10 Margin).',
               whyItMatters:
-                'Keeping every instrument running records unique storm physics, but drains your electrical safety margin.',
+                'Keeping instruments awake gathers awesome storm physics, at the cost of battery reserve.',
               scienceDelta: 10,
               marginDelta: -10,
               collabDelta: 5,
+              powerShiftW: -65,
             },
           ],
         }
       : {
-          id: 'thermal-shunt',
+          id: `thermal-shunt-${seed % 100}`,
           phaseIndex: 1,
+          triggerProgress: 0.28,
           leadRole: 'propulsion',
-          title: 'MMRTG Radiator Louver Calibration Drift',
+          title: 'RTG Radiator Louver Drift',
           description:
-            'Excess nuclear thermal energy is warming the spectrometer focal plane during cruise.',
+            'Heat from the nuclear battery is warming the spectrometer bay faster than planned during cruise.',
           choices: [
             {
               id: 'roll-maneuver',
-              label: 'Execute Passive Thermal Roll Maneuver',
-              detail: 'Uses minor RCS impulse to dump heat cleanly (+10 Margin, +6 Collab).',
+              label: 'Start Slow Thermal Roll Maneuver',
+              detail: 'Evenly radiates excess heat into space (+10 Margin, +2 Science).',
               whyItMatters:
-                'Slowly rotating the spacecraft like a rotisserie radiates heat into cold space so optical sensors stay accurate.',
+                'Slowly spinning the spacecraft like a rotisserie cools sun-facing panels without wasting battery power.',
               scienceDelta: 2,
               marginDelta: 10,
               collabDelta: 6,
+              powerShiftW: 20,
             },
             {
               id: 'duty-cycle',
-              label: 'Duty-Cycle High-Power Transmitters',
-              detail: 'Keep sensors cool with zero propellant spend (+5 Margin, -3 Science).',
+              label: 'Pause High-Power Radio Briefly',
+              detail: 'Drops internal heat fast (+5 Margin, -3 Science).',
               whyItMatters:
-                'Taking short transmitter breaks cuts internal electronics heat without using precious thruster fuel.',
+                'Taking short transmitter breaks reduces electronics heat with zero thruster fuel spent.',
               scienceDelta: -3,
               marginDelta: 5,
               collabDelta: 8,
+              powerShiftW: 35,
             },
           ],
         },
     {
-      id: `micrometeoroid-adcs-${seed % 100}`,
+      id: `valve-sensor-${seed % 100}`,
       phaseIndex: 1,
+      triggerProgress: 0.28,
       leadRole: 'propulsion',
-      title: 'Micrometeoroid Attitude Jitter Detected',
+      title: `${propulsion.name} Pressure Sensor Spike`,
       description:
-        'A tiny dust grain struck the solar boom, causing reaction wheels to spin faster to hold camera aim.',
-      choices: [
-        {
-          id: 'wheel-desat',
-          label: 'Run Gentle Reaction Wheel Desaturation',
-          detail: 'Uses tiny thruster puffs to stabilize pointing (+11 Margin, +8 Collab).',
-          whyItMatters:
-            'Bleeding off wheel spin keeps cameras and antennas steady so photos do not blur.',
-          scienceDelta: 3,
-          marginDelta: 11,
-          collabDelta: 8,
-        },
-        {
-          id: 'gyro-override',
-          label: 'Keep Shooting & Recalibrate Later',
-          detail: 'No science pause, slightly higher wear on attitude control (+8 Science, -7 Margin).',
-          whyItMatters:
-            'Skipping calibration avoids missing a science pass, but leaves less reaction-wheel safety cushion.',
-          scienceDelta: 8,
-          marginDelta: -7,
-          collabDelta: 4,
-        },
-      ],
-    },
-    {
-      id: `fuel-valve-sensor-${seed % 100}`,
-      phaseIndex: 1,
-      leadRole: 'propulsion',
-      title: `${propulsion.name} Pressure Sensor Anomaly`,
-      description:
-        'Telemetry shows a minor pressure oscillation in the main propulsion manifold ahead of orbital insertion.',
+        'Telemetry detects a brief pressure wobble in the main fuel line right before orbit insertion.',
       choices: [
         {
           id: 'backup-manifold',
-          label: 'Switch to Redundant Latch Valve & Slow Warmup',
-          detail: 'Protects main capture burn reliability (+12 Margin, +7 Collab).',
+          label: 'Switch to Backup Propellant Valve',
+          detail: 'Locks in safe orbit capture burn (+12 Margin, +7 Collab).',
           whyItMatters:
-            'Routing propellant through backup hardware prevents a stuck valve during the critical orbit capture burn.',
+            'Spacecraft carry backup valves so one sticky part never ruins an entire multi-million-dollar mission.',
           scienceDelta: 0,
           marginDelta: 12,
           collabDelta: 7,
+          powerShiftW: 15,
         },
         {
           id: 'single-burn-push',
-          label: 'Hold Primary Valve & Trim Burn Duration',
-          detail: 'Saves propellant budget but leaves less Δv cushion (+6 Science, -6 Margin).',
+          label: 'Hold Primary Valve & Trim Burn',
+          detail: 'Keeps tight schedule (+6 Science, -6 Margin).',
           whyItMatters:
-            'Staying on the primary line avoids valve cycling delays, though it trims your orbital reserve.',
+            'Skipping the switch saves time, though it leaves less propellant safety margin.',
           scienceDelta: 6,
           marginDelta: -6,
           collabDelta: 5,
+          powerShiftW: -25,
         },
       ],
     },
   ];
 
-  const opsPool: FlightAnomaly[] = [
+  const anomaly2Pool: FlightAnomaly[] = [
     {
-      id: `science-window-${seed % 10}`,
+      id: `micrometeoroid-panel-${seed % 100}`,
+      phaseIndex: 2,
+      triggerProgress: 0.56,
+      leadRole: 'power',
+      title: 'Micrometeoroid Damaged Solar Panel A!',
+      description:
+        'A pebble-sized space rock nicked one power wing, cutting spare wattage and shaking reaction wheels.',
+      choices: [
+        {
+          id: 'reroute-power',
+          label: 'Reroute Power & Lower Data Rate Briefly',
+          detail: 'Stabilizes bus voltage & wheel pointing (+11 Margin, +8 Collab, +3 Science).',
+          whyItMatters:
+            'Lowering radio transmit speed saves watts immediately so critical computers stay powered.',
+          scienceDelta: 3,
+          marginDelta: 11,
+          collabDelta: 8,
+          powerShiftW: 45,
+          dataShiftPct: -15,
+        },
+        {
+          id: 'keep-camera-full',
+          label: 'Keep Camera & Radio at Full Throttle',
+          detail: 'Zero pause in mapping, stresses battery bank (+8 Science, -8 Margin).',
+          whyItMatters:
+            'Full-power imaging finishes maps faster, but forces batteries to work harder through every shadow.',
+          scienceDelta: 8,
+          marginDelta: -8,
+          collabDelta: 4,
+          powerShiftW: -55,
+        },
+      ],
+    },
+    {
+      id: `attitude-jitter-${seed % 100}`,
+      phaseIndex: 2,
+      triggerProgress: 0.56,
+      leadRole: 'propulsion',
+      title: 'Reaction Wheel Spin Saturation',
+      description:
+        'Solar wind pressure spun up your aiming wheels; cameras may blur unless momentum is dumped.',
+      choices: [
+        {
+          id: 'wheel-desat',
+          label: 'Fire Gentle Thruster Puffs to Reset Wheels',
+          detail: 'Restores crystal-sharp camera aiming (+10 Margin, +4 Science).',
+          whyItMatters:
+            'Resetting spinning wheels keeps narrow-beam dishes and lenses locked squarely onto their targets.',
+          scienceDelta: 4,
+          marginDelta: 10,
+          collabDelta: 8,
+          powerShiftW: 25,
+        },
+        {
+          id: 'delay-desat',
+          label: 'Delay Reset Until After Target Flyby',
+          detail: 'Don’t miss a single second of flyby (+7 Science, -6 Margin).',
+          whyItMatters:
+            'Holding position catches fleeting science events, though pointing accuracy drifts slightly.',
+          scienceDelta: 7,
+          marginDelta: -6,
+          collabDelta: 4,
+          powerShiftW: -20,
+        },
+      ],
+    },
+  ];
+
+  const anomaly3Pool: FlightAnomaly[] = [
+    {
+      id: `science-burst-${seed % 10}`,
       phaseIndex: 3,
+      triggerProgress: 0.8,
       leadRole: 'payload',
       title:
         objective.targetBody === 'europa'
-          ? 'Transient Cryovolcanic Plume Eruption Detected'
+          ? 'Cryovolcanic Ice Plume Eruption Spotted!'
           : objective.targetBody === 'mars'
-            ? 'Regional Dust Storm Front Over Target Crater'
-            : 'High-Priority Transient Target Opportunity',
-      description: `Comms link (${comms.band}) has a narrow 4-hour high-gain window to transmit burst science data.`,
+            ? 'Giant Martian Dust Storm Front Forming!'
+            : 'Surprise Science Discovery Window!',
+      description: `Your ${comms.shortLabel} has a 4-hour clear window to beam bonus high-value measurements home.`,
       choices: [
         {
           id: 'lossless-compress',
-          label: 'Prioritize Cross-Instrument Compressed Burst',
-          detail: 'Balances onboard buffer & link margin for high-value science (+12 Science, +6 Margin).',
+          label: 'Compress & Stream Cross-Sensor Burst',
+          detail: 'Fits through antenna cleanly (+12 Science, +6 Margin, +10 Collab).',
           whyItMatters:
-            'Compressing files shrinks daily gigabytes so your antenna sends every key measurement before the Earth pass ends.',
+            'Lossless file compression lets smaller antennas return huge discoveries without overflowing memory.',
           scienceDelta: 12,
           marginDelta: 6,
           collabDelta: 10,
+          dataShiftPct: 12,
         },
         {
           id: 'raw-dump',
-          label: 'Transmit Uncompressed Raw Telemetry',
-          detail: 'Maximum fidelity if link holds, heavy power draw (+15 Science, -8 Margin).',
+          label: 'Beam Uncompressed Raw HD Telemetry',
+          detail: 'Top science fidelity, heavy battery & link load (+15 Science, -8 Margin).',
           whyItMatters:
-            'Raw files preserve every pixel for scientists, but demand maximum transmitter power and antenna speed.',
+            'Raw data is gold for scientists, provided your dish and power reserve can handle the surge.',
           scienceDelta: 15,
           marginDelta: -8,
           collabDelta: 4,
+          powerShiftW: -40,
+          dataShiftPct: 24,
         },
       ],
     },
     {
       id: `dsn-rain-fade-${seed % 100}`,
       phaseIndex: 3,
+      triggerProgress: 0.8,
       leadRole: 'power',
-      title: 'Deep Space Network Ground Station Rain Fade',
-      description:
-        `Heavy clouds over the Madrid ground dish attenuate ${comms.band} signal strength by 4 dB during downlink.`,
+      title: 'Ground Station Rain Fade Over Madrid',
+      description: `Thunderstorms over Earth's receiving dish weaken your ${comms.band} signal by 4 dB.`,
       choices: [
         {
           id: 'buffer-relay',
-          label: 'Store Science in Avionics Buffer Until Next Pass',
-          detail: 'Protects data integrity cleanly (+4 Science, +10 Margin, +9 Collab).',
+          label: 'Save Data in Memory Until Skies Clear',
+          detail: 'Zero lost packets (+5 Science, +10 Margin, +9 Collab).',
           whyItMatters:
-            'Saving observations in onboard memory until skies clear guarantees zero lost science packets.',
-          scienceDelta: 4,
+            'Avionics solid-state storage holds science safely until the next clear ground station rotates into view.',
+          scienceDelta: 5,
           marginDelta: 10,
           collabDelta: 9,
+          powerShiftW: 25,
         },
         {
           id: 'boost-tx',
-          label: 'Boost Transmitter Power & Stream Priority Maps',
-          detail: 'Pushes critical maps through storm noise (+11 Science, -8 Margin).',
+          label: 'Boost Transmitter Power Through Storm',
+          detail: 'Streams live data immediately (+11 Science, -8 Margin).',
           whyItMatters:
-            'Raising transmitter wattage punches through atmospheric interference at the cost of battery reserve.',
+            'Pumping extra watts into the transmitter punches through rain clouds at the cost of power reserve.',
           scienceDelta: 11,
           marginDelta: -8,
           collabDelta: 5,
+          powerShiftW: -45,
         },
       ],
     },
   ];
 
-  const a1 = cruisePool[seed % cruisePool.length];
-  const a2 = opsPool[(seed >> 2) % opsPool.length];
-  return [a1, a2];
+  return [
+    anomaly1Pool[seed % anomaly1Pool.length],
+    anomaly2Pool[(seed >> 1) % anomaly2Pool.length],
+    anomaly3Pool[(seed >> 2) % anomaly3Pool.length],
+  ];
 }
 
 export function evaluateSimulationOutcome(
@@ -734,7 +876,7 @@ export function evaluateSimulationOutcome(
   teamMemberCount: number,
   allReadySignedOff: boolean,
 ): SimulationOutcome {
-  const { difficulty, objective, orbit, launchVehicle, propulsion, power, comms, shielding, bus } =
+  const { difficulty, objective, orbit, launchVehicle, propulsion, power, comms, shielding, bus, instruments } =
     getCatalogParts(config);
   const lessons: string[] = [];
 
@@ -743,18 +885,39 @@ export function evaluateSimulationOutcome(
   const actionCollab = chosenActions.reduce((s, c) => s + c.collabDelta, 0);
 
   let missionSuccess = difficulty.isSandbox ? true : telemetry.launchReady;
+  let failureDay: number | null = null;
   let failureSummary = difficulty.isSandbox ? null : telemetry.criticalFailureReason;
 
   if (!difficulty.isSandbox) {
-    if (missionSuccess && telemetry.budgetStatus === 'Critical') {
+    if (!missionSuccess) {
+      if (telemetry.massStatus === 'Critical') {
+        failureDay = 1;
+        failureSummary = `Mission Failed on Day 1 (Liftoff): Your spacecraft (${telemetry.wetMassKg} kg) exceeded ${launchVehicle.name}'s ${telemetry.payloadCapacityKg} kg limit for ${orbit.shortName}.`;
+      } else if (telemetry.deltaVStatus === 'Critical') {
+        failureDay = 42;
+        failureSummary = `Mission Failed on Day 42 (Orbit Capture): ${propulsion.name} only had ${telemetry.availableDeltaVKms} km/s Δv, missing the ${telemetry.requiredDeltaVKms} km/s needed to enter ${orbit.shortName}.`;
+      } else if (telemetry.powerStatus === 'Critical') {
+        failureDay = 84;
+        failureSummary = `Mission Failed on Day 84 (Power Brownout): Your systems drew ${telemetry.powerPeakDrawW}W, but ${power.shortLabel} only made ${telemetry.powerGeneratedW}W at ${orbit.solarDistanceAU} AU.`;
+      } else {
+        failureDay = 12;
+      }
+    } else if (telemetry.budgetStatus === 'Critical') {
       missionSuccess = false;
-      failureSummary = `Mission canceled in flight review: cost $${telemetry.totalCostM}M breached $${telemetry.budgetCapM}M budget cap.`;
+      failureDay = 1;
+      failureSummary = `Mission Canceled on Day 1 (Review): Total cost $${telemetry.totalCostM}M went $${(telemetry.totalCostM - telemetry.budgetCapM).toFixed(1)}M over your $${telemetry.budgetCapM}M agency budget cap.`;
     } else if (
-      missionSuccess &&
-      (telemetry.linkMarginDb < 0 || telemetry.downlinkCapacityGBDay < telemetry.dataGeneratedGBDay * 0.5)
+      telemetry.linkMarginDb < 0 ||
+      telemetry.downlinkCapacityGBDay < telemetry.dataGeneratedGBDay * 0.5
     ) {
       missionSuccess = false;
-      failureSummary = `Communications failure: ${telemetry.downlinkCapacityGBDay} GB/day downlink (${telemetry.linkMarginDb} dB) could not return ${telemetry.dataGeneratedGBDay} GB/day science data.`;
+      failureDay = 140;
+      const topInst = instruments[0]?.shortName || 'instruments';
+      failureSummary = `Mission Failed on Day 140: Your ${topInst} generated ${telemetry.dataGeneratedGBDay} GB/day—more data than your ${comms.shortLabel} (${telemetry.downlinkCapacityGBDay} GB/day) could send back to Earth!`;
+    } else if (telemetry.estimatedLifetimeMonths < objective.minLifetimeMonths * 0.72) {
+      missionSuccess = false;
+      failureDay = Math.max(90, Math.round(telemetry.estimatedLifetimeMonths * 30));
+      failureSummary = `Mission Failed on Day ${failureDay}: Harsh orbital radiation (${orbit.radiationDoseRate} krad/yr) overwhelmed ${shielding.name} before the ${objective.minLifetimeMonths}-month goal.`;
     }
   }
 
@@ -775,8 +938,8 @@ export function evaluateSimulationOutcome(
       detail: `${telemetry.wetMassKg} kg / ${telemetry.payloadCapacityKg} kg max`,
       whyItMattered:
         telemetry.massStatus !== 'Critical'
-          ? `Your fueled spacecraft (${telemetry.wetMassKg} kg) fit inside ${launchVehicle.name}'s ${telemetry.payloadCapacityKg} kg lift limit for ${orbit.name}.`
-          : `Distant/low orbits shrink a rocket's lift limit; ${telemetry.wetMassKg} kg wet mass or the ${bus.name} frame exceeded what ${launchVehicle.name} could carry here.`,
+          ? `Your fueled spacecraft (${telemetry.wetMassKg} kg) fit inside ${launchVehicle.name}'s ${telemetry.payloadCapacityKg} kg lift limit for ${orbit.shortName}.`
+          : `Distant/low orbits shrink a rocket's lift limit; ${telemetry.wetMassKg} kg wet mass or the ${bus.shortLabel} frame exceeded what ${launchVehicle.name} could carry here.`,
     },
     {
       label: 'Orbital Insertion Δv',
@@ -784,8 +947,8 @@ export function evaluateSimulationOutcome(
       detail: `${telemetry.availableDeltaVKms} / ${telemetry.requiredDeltaVKms} km/s`,
       whyItMattered:
         telemetry.deltaVStatus !== 'Critical'
-          ? `${propulsion.name} (${propulsion.ispSec}s Isp) gave enough speed change (${telemetry.availableDeltaVKms} km/s) to brake into ${orbit.name}.`
-          : `Entering ${orbit.name} takes ${telemetry.requiredDeltaVKms} km/s of Δv; without enough propellant or a higher-Isp engine, the probe flies past its target.`,
+          ? `${propulsion.name} (${propulsion.ispSec}s Isp) gave enough speed change (${telemetry.availableDeltaVKms} km/s) to brake into ${orbit.shortName}.`
+          : `Entering ${orbit.shortName} takes ${telemetry.requiredDeltaVKms} km/s of Δv; without enough propellant or a higher-Isp engine, the probe flies past its target.`,
     },
     {
       label: 'Power Generation Margin',
@@ -793,17 +956,17 @@ export function evaluateSimulationOutcome(
       detail: `${telemetry.powerMarginW >= 0 ? '+' : ''}${telemetry.powerMarginW} W`,
       whyItMattered:
         telemetry.powerMarginW >= 0
-          ? `${power.name} generated ${telemetry.powerGeneratedW}W at ${orbit.solarDistanceAU} AU, covering ${telemetry.powerPeakDrawW}W peak draw with +${telemetry.powerMarginW}W spare.`
-          : `At ${orbit.solarDistanceAU} AU sunlight drops to ${(telemetry.solarFluxFactor * 100).toFixed(1)}%, so ${power.name} fell ${Math.abs(telemetry.powerMarginW)}W short of instrument and heater draw.`,
+          ? `${power.shortLabel} generated ${telemetry.powerGeneratedW}W at ${orbit.solarDistanceAU} AU, covering ${telemetry.powerPeakDrawW}W peak draw with +${telemetry.powerMarginW}W spare.`
+          : `At ${orbit.solarDistanceAU} AU sunlight drops to ${(telemetry.solarFluxFactor * 100).toFixed(1)}%, so ${power.shortLabel} fell ${Math.abs(telemetry.powerMarginW)}W short of instrument and heater draw.`,
     },
     {
       label: 'Communications Downlink',
       passed: telemetry.dataStatus !== 'Critical',
-      detail: `${telemetry.downlinkCapacityGBDay} / ${telemetry.dataGeneratedGBDay} GB/d (${telemetry.linkMarginDb} dB)`,
+      detail: `${telemetry.downlinkCapacityGBDay} / ${telemetry.dataGeneratedGBDay} GB/d (${telemetry.downlinkMbps} Mbps)`,
       whyItMattered:
         telemetry.dataStatus !== 'Critical'
-          ? `${comms.name} maintained a ${telemetry.linkMarginDb} dB link across ${orbit.commsDistanceAU} AU, returning ${telemetry.downlinkCapacityGBDay} GB/day vs ${telemetry.dataGeneratedGBDay} GB/day gathered.`
-          : `Across ${orbit.commsDistanceAU} AU, ${comms.name} only sent ${telemetry.downlinkCapacityGBDay} GB/day (${telemetry.linkMarginDb} dB), bottlenecking ${telemetry.dataGeneratedGBDay} GB/day of science data.`,
+          ? `${comms.shortLabel} maintained a ${telemetry.linkMarginDb} dB link across ${orbit.commsDistanceAU} AU, returning ${telemetry.downlinkCapacityGBDay} GB/day vs ${telemetry.dataGeneratedGBDay} GB/day gathered.`
+          : `Across ${orbit.commsDistanceAU} AU, ${comms.shortLabel} only sent ${telemetry.downlinkCapacityGBDay} GB/day (${telemetry.linkMarginDb} dB), bottlenecking ${telemetry.dataGeneratedGBDay} GB/day of science data.`,
     },
     {
       label: 'Science Return Target',
@@ -811,13 +974,13 @@ export function evaluateSimulationOutcome(
       detail: `${telemetry.scienceReturnPotential} / ${objective.minScienceValue} min`,
       whyItMattered:
         telemetry.scienceReturnPotential >= objective.minScienceValue
-          ? `Matching preferred sensors with ${orbit.name} boosted measurement quality to ${telemetry.scienceReturnPotential} points.`
+          ? `Matching preferred sensors with ${orbit.shortName} boosted measurement quality to ${telemetry.scienceReturnPotential} points.`
           : `To reach ${objective.minScienceValue} science points, pair instruments suited to ${objective.title} with an orbit around ${objective.targetBody.toUpperCase()}.`,
     },
     {
       label: 'Operational Lifetime Goal',
       passed: telemetry.estimatedLifetimeMonths >= objective.minLifetimeMonths,
-      detail: `${telemetry.estimatedLifetimeMonths} / ${telemetry.requiredLifetimeMonths} mo`,
+      detail: `${telemetry.estimatedLifetimeYears} yrs (${telemetry.estimatedLifetimeMonths} mo)`,
       whyItMattered:
         telemetry.estimatedLifetimeMonths >= objective.minLifetimeMonths
           ? `${shielding.name} (${shielding.radToleranceKrad} krad) and fuel reserves sustained ${telemetry.estimatedLifetimeMonths} months against ${orbit.radiationDoseRate} krad/yr radiation.`
@@ -827,7 +990,7 @@ export function evaluateSimulationOutcome(
 
   // 1. Science Score (0-100)
   const rawScience = telemetry.scienceReturnPotential + actionScience;
-  const scienceScore = Math.max(0, Math.min(100, Math.round(missionSuccess ? rawScience : rawScience * 0.4)));
+  const scienceScore = Math.max(0, Math.min(100, Math.round(missionSuccess ? rawScience : rawScience * 0.42)));
 
   // 2. Engineering Margin Score (0-100)
   const massUtilization = telemetry.wetMassKg / Math.max(1, telemetry.payloadCapacityKg);
@@ -892,11 +1055,11 @@ export function evaluateSimulationOutcome(
       `Power margin (${telemetry.powerMarginW} W) was tight—deep-space 1/r² solar loss or high instrument draw limits duty cycles.`,
     );
   } else {
-    lessons.push(`Healthy ${telemetry.powerMarginW} W power reserve enabled uninterrupted instrument operations.`);
+    lessons.push(`Healthy +${telemetry.powerMarginW} W power reserve enabled uninterrupted instrument operations.`);
   }
   if (telemetry.downlinkCapacityGBDay < telemetry.dataGeneratedGBDay) {
     lessons.push(
-      `Science instruments produced ${telemetry.dataGeneratedGBDay} GB/day vs ${telemetry.downlinkCapacityGBDay} GB/day downlink—upgrading to Ka-Band or Optical prevents buffer overflow.`,
+      `Science instruments produced ${telemetry.dataGeneratedGBDay} GB/day vs ${telemetry.downlinkCapacityGBDay} GB/day downlink—upgrading to High-Gain Dish or Laser Comms prevents buffer overflow.`,
     );
   }
   if (telemetry.totalCostM <= telemetry.budgetCapM * 0.88) {
@@ -914,6 +1077,7 @@ export function evaluateSimulationOutcome(
     synergyScore,
     collabScore,
     missionSuccess,
+    failureDay,
     failureSummary,
     criteriaChecks,
     lessons,

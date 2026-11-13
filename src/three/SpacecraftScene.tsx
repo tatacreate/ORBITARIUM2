@@ -14,7 +14,7 @@ import {
 
 interface SpacecraftSceneProps {
   config: MissionConfig;
-  sceneMode: 'title' | 'hangar' | 'orbit';
+  sceneMode: 'title' | 'hangar' | 'planner' | 'orbit';
   explodeAmount: number; // 0..1
   cameraPreset: CameraPreset;
   cameraPresetNonce: number;
@@ -60,7 +60,6 @@ export function SpacecraftScene({
   const mountRef = useRef<HTMLDivElement | null>(null);
   const [webglError, setWebglError] = useState(false);
 
-  // Latest props in refs so React updates never tear down WebGL
   const stateRef = useRef({
     config,
     sceneMode,
@@ -78,7 +77,6 @@ export function SpacecraftScene({
     onSelectSubsystem,
   };
 
-  // Trigger camera glide when preset changes
   const camTransitionRef = useRef({
     active: false,
     preset: cameraPreset,
@@ -93,7 +91,6 @@ export function SpacecraftScene({
     };
   }, [cameraPreset, cameraPresetNonce, sceneMode]);
 
-  // Rebuild trigger for spacecraft assembly
   const rebuildRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
@@ -104,6 +101,7 @@ export function SpacecraftScene({
     config.powerId,
     config.commsId,
     config.shieldingId,
+    config.launchVehicleId,
     config.solarSizing,
     config.propellantRatio,
     config.orbitId,
@@ -150,7 +148,7 @@ export function SpacecraftScene({
     renderer.setPixelRatio(isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.12;
+    renderer.toneMappingExposure = 1.15;
     renderer.shadowMap.enabled = !isSoftwareGl;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
@@ -177,16 +175,16 @@ export function SpacecraftScene({
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = !isSoftwareGl;
     controls.dampingFactor = 0.06;
-    controls.minDistance = 3.2;
-    controls.maxDistance = 28;
+    controls.minDistance = 3.0;
+    controls.maxDistance = 30;
     controls.maxPolarAngle = Math.PI * 0.88;
-    controls.target.set(0, 0.8, 0);
+    controls.target.set(0, 0.7, 0);
     controls.addEventListener('start', () => {
       camTransitionRef.current.active = false;
     });
 
     // 3. Balanced 3-Point Warm/Cool Studio Lighting
-    const hemiLight = new THREE.HemisphereLight(0x8ecae6, 0x0f172a, 0.65);
+    const hemiLight = new THREE.HemisphereLight(0x8ecae6, 0x0f172a, 0.7);
     scene.add(hemiLight);
 
     const keyLight = new THREE.DirectionalLight(0xfff1d6, 2.35);
@@ -203,7 +201,7 @@ export function SpacecraftScene({
     keyLight.shadow.normalBias = 0.02;
     scene.add(keyLight);
 
-    const rimLight = new THREE.DirectionalLight(0x38bdf8, 1.15);
+    const rimLight = new THREE.DirectionalLight(0x38bdf8, 1.2);
     rimLight.position.set(-7, 4, -8);
     scene.add(rimLight);
 
@@ -260,7 +258,7 @@ export function SpacecraftScene({
     const matAccentCyan = new THREE.MeshStandardMaterial({
       color: 0x06b6d4,
       emissive: 0x0891b2,
-      emissiveIntensity: 0.9,
+      emissiveIntensity: 0.95,
       metalness: 0.5,
       roughness: 0.25,
     });
@@ -271,6 +269,13 @@ export function SpacecraftScene({
       emissiveIntensity: 2.2,
       metalness: 0.1,
       roughness: 0.2,
+    });
+
+    const matFlame = new THREE.MeshBasicMaterial({
+      color: 0xf59e0b,
+      transparent: true,
+      opacity: 0.85,
+      depthWrite: false,
     });
 
     const matLens = new THREE.MeshPhysicalMaterial({
@@ -380,7 +385,7 @@ export function SpacecraftScene({
     hangarGroup.add(contactShadow);
     scene.add(hangarGroup);
 
-    // 7. Orbital Simulation Planet & Trajectory Ring
+    // 7. Orbital Simulation Planet & Glowing Trajectory Ring
     const orbitGroup = new THREE.Group();
     orbitGroup.visible = false;
     scene.add(orbitGroup);
@@ -400,7 +405,7 @@ export function SpacecraftScene({
     const atmoMat = new THREE.MeshBasicMaterial({
       color: 0x38bdf8,
       transparent: true,
-      opacity: 0.12,
+      opacity: 0.14,
       side: THREE.BackSide,
       depthWrite: false,
     });
@@ -421,27 +426,75 @@ export function SpacecraftScene({
       );
     }
     const orbitCurve = new THREE.CatmullRomCurve3(orbitCurvePts, true);
-    const orbitTubeGeo = new THREE.TubeGeometry(orbitCurve, 96, 0.032, 6, true);
+    const orbitTubeGeo = new THREE.TubeGeometry(orbitCurve, 96, 0.036, 6, true);
     const orbitTubeMat = new THREE.MeshBasicMaterial({
       color: 0x22d3ee,
       transparent: true,
-      opacity: 0.45,
+      opacity: 0.55,
     });
     const orbitTube = new THREE.Mesh(orbitTubeGeo, orbitTubeMat);
     orbitGroup.add(orbitTube);
 
-    // Thruster Plume InstancedMesh (48 particles)
-    const plumeCount = 48;
-    const plumeGeo = new THREE.SphereGeometry(0.08, 8, 8);
-    const plumeMat = new THREE.MeshBasicMaterial({
+    // Glowing trail spheres behind spacecraft along trajectory
+    const trailCount = 24;
+    const trailGeo = new THREE.SphereGeometry(0.075, 8, 8);
+    const trailMat = new THREE.MeshBasicMaterial({
       color: 0x38bdf8,
       transparent: true,
-      opacity: 0.75,
+      opacity: 0.78,
+      depthWrite: false,
+    });
+    const trailNodes = new THREE.InstancedMesh(trailGeo, trailMat, trailCount);
+    trailNodes.frustumCulled = false;
+    orbitGroup.add(trailNodes);
+
+    // Thruster / Rocket Plume InstancedMesh (48 particles)
+    const plumeCount = 48;
+    const plumeGeo = new THREE.SphereGeometry(0.09, 8, 8);
+    const plumeMat = new THREE.MeshBasicMaterial({
+      color: 0xf59e0b,
+      transparent: true,
+      opacity: 0.85,
       depthWrite: false,
     });
     const plumeParticles = new THREE.InstancedMesh(plumeGeo, plumeMat, plumeCount);
     plumeParticles.frustumCulled = false;
     orbitGroup.add(plumeParticles);
+
+    // 7B. Animated Launch Rocket Stack (Stage 1 + Fairing Separation during simProgress < 0.22)
+    const rocketGroup = new THREE.Group();
+    rocketGroup.visible = false;
+    orbitGroup.add(rocketGroup);
+
+    const rocketBodyGeo = new THREE.CylinderGeometry(0.42, 0.48, 3.6, 20);
+    const rocketBody = new THREE.Mesh(rocketBodyGeo, matHull);
+    rocketBody.position.y = -0.3;
+    rocketGroup.add(rocketBody);
+
+    const rocketInterstageGeo = new THREE.CylinderGeometry(0.44, 0.44, 0.35, 20);
+    const rocketInterstage = new THREE.Mesh(rocketInterstageGeo, matDarkCarbon);
+    rocketInterstage.position.y = 1.55;
+    rocketGroup.add(rocketInterstage);
+
+    const rocketNozzleGeo = new THREE.CylinderGeometry(0.18, 0.34, 0.45, 16);
+    const rocketNozzle = new THREE.Mesh(rocketNozzleGeo, matNozzle);
+    rocketNozzle.position.y = -2.3;
+    rocketGroup.add(rocketNozzle);
+
+    const rocketFlameGeo = new THREE.ConeGeometry(0.32, 1.4, 14);
+    rocketFlameGeo.rotateX(Math.PI);
+    const rocketFlame = new THREE.Mesh(rocketFlameGeo, matFlame);
+    rocketFlame.position.y = -3.15;
+    rocketGroup.add(rocketFlame);
+
+    // Fairing Halves that peel open during fairing separation (simProgress 0.14..0.22)
+    const fairingLeftGeo = new THREE.CylinderGeometry(0.12, 0.44, 1.35, 16, 1, false, 0, Math.PI);
+    const fairingRightGeo = new THREE.CylinderGeometry(0.12, 0.44, 1.35, 16, 1, false, Math.PI, Math.PI);
+    const fairingLeft = new THREE.Mesh(fairingLeftGeo, matDish);
+    const fairingRight = new THREE.Mesh(fairingRightGeo, matDish);
+    fairingLeft.position.set(0, 2.38, 0);
+    fairingRight.position.set(0, 2.38, 0);
+    rocketGroup.add(fairingLeft, fairingRight);
 
     // 8. Composite Procedural Spacecraft Assembly Root
     const craftRoot = new THREE.Group();
@@ -460,14 +513,24 @@ export function SpacecraftScene({
 
     Object.values(subGroups).forEach((g) => craftRoot.add(g));
 
-    // Exploded view current offsets
     const explodeCurrent = { val: 0 };
 
     const rebuildSpacecraft = () => {
       const cfg = stateRef.current.config;
-      const { bus, propulsion, power, comms, shielding, instruments, orbit, modelMode } =
+      const { bus, propulsion, power, comms, shielding, instruments, orbit, modelMode, launchVehicle } =
         getCatalogParts(cfg);
       const isRealistic = modelMode === 'realistic';
+
+      // Rocket scale tint based on chosen launch vehicle
+      const rocketScale =
+        launchVehicle.id === 'electron-light'
+          ? 0.72
+          : launchVehicle.id === 'falcon-med'
+            ? 0.96
+            : launchVehicle.id === 'vulcan-heavy'
+              ? 1.12
+              : 1.28;
+      rocketGroup.scale.setScalar(rocketScale);
 
       // Update Planet texture for Orbit mode
       let pTex = planetCache.get(orbit.body);
@@ -486,13 +549,12 @@ export function SpacecraftScene({
       else atmoMat.color.setHex(0x94a3b8);
       atmoMat.opacity = orbit.body === 'moon' || orbit.body === 'psyche' ? 0.04 : 0.14;
 
-      // Clear previous geometries
       Object.values(subGroups).forEach((g) => {
         disposeGroupResources(g);
         g.clear();
       });
 
-      // --- A. BUS & STRUCTURE (Primary Silhouette) ---
+      // --- A. BUS & STRUCTURE ---
       const busRadius = bus.tier === 1 ? 0.56 : bus.tier === 2 ? 0.86 : 1.08;
       const busHeight = bus.tier === 1 ? 0.92 : bus.tier === 2 ? 1.24 : 1.56;
       const sides = bus.tier === 1 ? 4 : bus.tier === 2 ? 8 : 6;
@@ -503,7 +565,6 @@ export function SpacecraftScene({
       coreMesh.receiveShadow = true;
       subGroups.bus.add(coreMesh);
 
-      // Top & bottom beveled structural collars
       const collarGeo = new THREE.CylinderGeometry(
         busRadius * 1.08,
         busRadius * 1.08,
@@ -520,7 +581,6 @@ export function SpacecraftScene({
       botCollar.castShadow = true;
       subGroups.bus.add(botCollar);
 
-      // Star tracker optical baffles (realistic detail)
       if (isRealistic) {
         for (let i = 0; i < 2; i++) {
           const stGroup = new THREE.Group();
@@ -531,7 +591,11 @@ export function SpacecraftScene({
           const stLens = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 0.04, 12), matLens);
           stLens.position.y = 0.13;
           stGroup.add(stTube, stLens);
-          stGroup.position.set(i === 0 ? busRadius * 0.72 : -busRadius * 0.72, busHeight * 0.35, busRadius * 0.55);
+          stGroup.position.set(
+            i === 0 ? busRadius * 0.72 : -busRadius * 0.72,
+            busHeight * 0.35,
+            busRadius * 0.55,
+          );
           stGroup.rotation.set(0.45, 0, i === 0 ? -0.4 : 0.4);
           subGroups.bus.add(stGroup);
         }
@@ -547,22 +611,21 @@ export function SpacecraftScene({
         sides,
       );
       const wrapMat =
-        shielding.id === 'mli-standard'
-          ? matKapton
-          : shielding.id === 'aerogel-rad'
-            ? matKapton
-            : matHull;
+        shielding.id === 'mli-standard' || shielding.id === 'aerogel-rad' ? matKapton : matHull;
       const wrapMesh = new THREE.Mesh(wrapGeo, wrapMat);
       wrapMesh.castShadow = true;
       subGroups.shielding.add(wrapMesh);
 
       if (shielding.id !== 'mli-standard' && isRealistic) {
-        // Armored radiation vault ribs / cryo radiator fins
         const finCount = shielding.id === 'cryo-radiator' ? 6 : 4;
         for (let i = 0; i < finCount; i++) {
           const angle = (i / finCount) * Math.PI * 2;
           const fin = new THREE.Mesh(
-            new THREE.BoxGeometry(0.08, busHeight * 0.65, shielding.id === 'cryo-radiator' ? 0.36 : 0.18),
+            new THREE.BoxGeometry(
+              0.08,
+              busHeight * 0.65,
+              shielding.id === 'cryo-radiator' ? 0.36 : 0.18,
+            ),
             shielding.id === 'cryo-radiator' ? matAccentCyan : matDarkCarbon,
           );
           fin.position.set(
@@ -577,7 +640,7 @@ export function SpacecraftScene({
       }
       tagInteractive(subGroups.shielding, 'bus');
 
-      // --- C. PROPULSION SYSTEM (Lathed Bell / Xenon Hall Thruster + Propellant Tanks) ---
+      // --- C. PROPULSION SYSTEM ---
       const tankScale = 0.75 + cfg.propellantRatio * 0.3;
       const tankR = busRadius * 0.28 * tankScale;
       for (let i = 0; i < 4; i++) {
@@ -593,7 +656,6 @@ export function SpacecraftScene({
       }
 
       if (propulsion.electricPropulsion) {
-        // Xenon Hall-Effect Ion Drive Ring
         const ionHousing = new THREE.Mesh(
           new THREE.CylinderGeometry(busRadius * 0.48, busRadius * 0.56, 0.26, 24),
           matDarkCarbon,
@@ -607,7 +669,6 @@ export function SpacecraftScene({
         ionChannel.position.y = -busHeight * 0.5 - 0.36;
         subGroups.propulsion.add(ionHousing, ionChannel);
       } else {
-        // Lathed parabolic rocket nozzle bell
         const bellScale = propulsion.id === 'biprop-hyper' ? 1.25 : 0.85;
         const bellPts = [
           new THREE.Vector2(0.08 * bellScale, 0.0),
@@ -622,7 +683,6 @@ export function SpacecraftScene({
         subGroups.propulsion.add(bellMesh);
       }
 
-      // 4x RCS Attitude Thruster Quads (realistic detail)
       if (isRealistic) {
         for (let i = 0; i < 4; i++) {
           const a = (i / 4) * Math.PI * 2;
@@ -638,7 +698,7 @@ export function SpacecraftScene({
       }
       tagInteractive(subGroups.propulsion, 'bus');
 
-      // --- D. POWER SYSTEM (Articulated Solar Arrays OR MMRTG Nuclear Finned Battery) ---
+      // --- D. POWER SYSTEM ---
       if (power.kind === 'solar') {
         const wingLen = (power.id === 'ultraflex-array' ? 2.55 : 1.95) * cfg.solarSizing;
         const wingW = power.id === 'ultraflex-array' ? 1.05 : 0.78;
@@ -661,7 +721,6 @@ export function SpacecraftScene({
           wg.add(boom);
 
           if (power.id === 'ultraflex-array') {
-            // Circular Mega-Flex Array Disks
             const disk = new THREE.Mesh(
               new THREE.CylinderGeometry(wingLen * 0.48, wingLen * 0.48, 0.035, 16),
               matSolarCell,
@@ -671,7 +730,6 @@ export function SpacecraftScene({
             disk.receiveShadow = true;
             wg.add(disk);
           } else {
-            // Segmented Rectangular Solar Panels
             const panel = new THREE.Mesh(
               new THREE.BoxGeometry(wingLen, 0.04, wingW),
               matSolarCell,
@@ -694,7 +752,6 @@ export function SpacecraftScene({
         subGroups.powerLeft.add(makeWing(-1));
         subGroups.powerRight.add(makeWing(1));
       } else {
-        // MMRTG Nuclear Cylinder with radial cooling fins
         const rtgGroup = new THREE.Group();
         const rtgBody = new THREE.Mesh(
           new THREE.CylinderGeometry(0.24, 0.24, 1.05, 16),
@@ -708,11 +765,7 @@ export function SpacecraftScene({
         for (let f = 0; f < 6; f++) {
           const a = (f / 6) * Math.PI * 2;
           const fin = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.03, 0.22), matRtgGlow);
-          fin.position.set(
-            busRadius + 0.65,
-            Math.sin(a) * 0.28,
-            Math.cos(a) * 0.28,
-          );
+          fin.position.set(busRadius + 0.65, Math.sin(a) * 0.28, Math.cos(a) * 0.28);
           fin.rotation.x = a;
           rtgGroup.add(fin);
         }
@@ -721,16 +774,18 @@ export function SpacecraftScene({
       tagInteractive(subGroups.powerLeft, 'power');
       tagInteractive(subGroups.powerRight, 'power');
 
-      // --- E. COMMUNICATIONS DISH / OPTICAL LASER TURRET ---
+      // --- E. COMMUNICATIONS DISH / LASER TURRET ---
       const commsY = busHeight * 0.5 + 0.14;
-      if (comms.band === 'X-Band') {
+      if (comms.band === 'S-Band') {
         const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.06, 0.45, 10), matHull);
         mast.position.y = commsY + 0.22;
-        const helix = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.35, 12), matAccentCyan);
+        const helix = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.16, 0.16, 0.35, 12),
+          matAccentCyan,
+        );
         helix.position.y = commsY + 0.52;
         subGroups.comms.add(mast, helix);
       } else if (comms.band === 'Ka-Band') {
-        // Parabolic Dish via LatheGeometry + tripod feed horn
         const dishPts = [
           new THREE.Vector2(0.01, 0),
           new THREE.Vector2(0.35, 0.07),
@@ -756,11 +811,13 @@ export function SpacecraftScene({
             new THREE.Vector3(Math.cos(a) * 0.92, commsY + 0.56, Math.sin(a) * 0.92),
             new THREE.Vector3(0, commsY + 0.82, 0),
           );
-          const strut = new THREE.Mesh(new THREE.TubeGeometry(strutCurve, 4, 0.018, 6, false), matHull);
+          const strut = new THREE.Mesh(
+            new THREE.TubeGeometry(strutCurve, 4, 0.018, 6, false),
+            matHull,
+          );
           subGroups.comms.add(strut);
         }
       } else {
-        // Optical Laser Gimbal Turret
         const yoke = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.36, 0.32), matDarkCarbon);
         yoke.position.y = commsY + 0.22;
         const turret = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.22, 0.46, 20), matHull);
@@ -773,7 +830,7 @@ export function SpacecraftScene({
       }
       tagInteractive(subGroups.comms, 'power');
 
-      // --- F. SCIENTIFIC INSTRUMENTS (Visibly mounted around payload deck) ---
+      // --- F. SCIENTIFIC INSTRUMENTS ---
       const mountRadius = busRadius + 0.16;
       instruments.forEach((inst, idx) => {
         const angle = (idx / Math.max(1, instruments.length)) * Math.PI * 2 + 0.4;
@@ -823,7 +880,6 @@ export function SpacecraftScene({
           sensorTip.position.x = 1.85;
           instGroup.add(boom, sensorTip);
         } else {
-          // Mass Spec or Gamma-Neutron Spectrometer housing
           const box = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.3, 0.34), matHull);
           box.position.x = 0.18;
           const cone = new THREE.Mesh(
@@ -846,7 +902,7 @@ export function SpacecraftScene({
       renderer.compile(scene, camera);
     }
 
-    // 9. Throttled Click & Hover Raycasting onto Layer 1 (Spacecraft Subsystems)
+    // 9. Throttled Click & Hover Raycasting onto Layer 1
     const raycaster = new THREE.Raycaster();
     raycaster.layers.set(1);
     const pointer = new THREE.Vector2();
@@ -865,7 +921,7 @@ export function SpacecraftScene({
 
     const onPointerUp = (ev: PointerEvent) => {
       const dist = Math.hypot(ev.clientX - pointerDownPos.x, ev.clientY - pointerDownPos.y);
-      if (dist > 6) return; // Dragged camera, not a click
+      if (dist > 6) return;
       if (stateRef.current.sceneMode !== 'hangar') return;
       updatePointer(ev);
       raycaster.setFromCamera(pointer, camera);
@@ -896,7 +952,7 @@ export function SpacecraftScene({
     renderer.domElement.addEventListener('pointerup', onPointerUp);
     renderer.domElement.addEventListener('pointermove', onPointerMove);
 
-    // 10. Animation Loop with Software WebGL afterDraw Pacing
+    // 10. Animation Loop
     const clock = new THREE.Clock();
     let frameId = 0;
     let disposed = false;
@@ -925,7 +981,6 @@ export function SpacecraftScene({
       const { sceneMode: mode, explodeAmount: targetExplode, simProgress: simProg } =
         stateRef.current;
 
-      // Exploded view damping
       explodeCurrent.val = THREE.MathUtils.damp(explodeCurrent.val, targetExplode, 7, dt);
       const ex = explodeCurrent.val;
       subGroups.propulsion.position.y = -ex * 1.15;
@@ -938,6 +993,10 @@ export function SpacecraftScene({
       if (mode === 'title') {
         hangarGroup.visible = false;
         orbitGroup.visible = true;
+        rocketGroup.visible = false;
+        craftRoot.visible = true;
+        trailNodes.visible = false;
+        plumeParticles.visible = false;
         planetMesh.rotation.y += dt * 0.05;
 
         const angle = elapsed * 0.22;
@@ -946,7 +1005,6 @@ export function SpacecraftScene({
         craftRoot.lookAt(planetMesh.position);
         craftRoot.rotateY(Math.PI / 2);
 
-        // Camera frames craft on right side so left third stays calm for Title Screen lockup
         _targetCamPos.set(
           craftRoot.position.x - 2.6,
           craftRoot.position.y + 2.1,
@@ -955,10 +1013,26 @@ export function SpacecraftScene({
         _targetLook.set(craftRoot.position.x - 1.8, craftRoot.position.y - 0.1, craftRoot.position.z);
         camera.position.lerp(_targetCamPos, 1 - Math.exp(-3 * dt));
         controls.target.lerp(_targetLook, 1 - Math.exp(-4 * dt));
+      } else if (mode === 'planner') {
+        hangarGroup.visible = false;
+        orbitGroup.visible = true;
+        rocketGroup.visible = false;
+        craftRoot.visible = false;
+        trailNodes.visible = false;
         plumeParticles.visible = false;
+        planetMesh.rotation.y += dt * 0.06;
+
+        _targetCamPos.set(0, 2.5, 11.5);
+        _targetLook.set(0, -1.4, -10.5);
+        camera.position.lerp(_targetCamPos, 1 - Math.exp(-3.5 * dt));
+        controls.target.lerp(_targetLook, 1 - Math.exp(-4 * dt));
       } else if (mode === 'hangar') {
         hangarGroup.visible = true;
         orbitGroup.visible = false;
+        rocketGroup.visible = false;
+        craftRoot.visible = true;
+        trailNodes.visible = false;
+        plumeParticles.visible = false;
 
         craftRoot.position.set(0, 0.72 + Math.sin(elapsed * 1.3) * 0.04, 0);
         craftRoot.rotation.set(0, elapsed * 0.14, 0);
@@ -986,43 +1060,114 @@ export function SpacecraftScene({
           }
         }
       } else {
-        // Orbit Live Mission Simulation Mode
+        // Orbit Live Mission Simulation Mode (Multi-Stage Launch -> Orbit)
         hangarGroup.visible = false;
         orbitGroup.visible = true;
-        plumeParticles.visible = true;
         planetMesh.rotation.y += dt * 0.09;
 
-        const t = Math.min(0.999, Math.max(0.001, simProg));
-        orbitCurve.getPointAt(t, _v1);
-        orbitCurve.getPointAt((t + 0.01) % 1, _v2);
-        craftRoot.position.copy(_v1);
-        craftRoot.lookAt(_v2);
-        craftRoot.rotateX(Math.PI / 2);
+        const isLaunchStage = simProg < 0.22;
 
-        // Animate thruster plume particles trailing behind craft
-        const firing = simProg < 0.25 || (simProg > 0.45 && simProg < 0.72);
-        plumeParticles.visible = firing;
-        if (firing) {
+        if (isLaunchStage) {
+          // Animated 3D Launch Stack Ascent + Fairing Separation
+          rocketGroup.visible = true;
+          craftRoot.visible = simProg >= 0.16;
+          trailNodes.visible = false;
+          plumeParticles.visible = true;
+
+          const launchT = simProg / 0.22; // 0..1
+          const altY = -3.0 + launchT * 6.5;
+          const tiltZ = -launchT * 0.42;
+          rocketGroup.position.set(-2.5 + launchT * 2.5, altY, -1.8);
+          rocketGroup.rotation.set(0.12, 0, tiltZ);
+
+          // Flame flicker
+          const flamePulse = 0.85 + Math.sin(elapsed * 28) * 0.18;
+          rocketFlame.scale.set(1, flamePulse, 1);
+
+          // Fairing halves separate cleanly between 0.14 and 0.22
+          const fairingSep = Math.max(0, (simProg - 0.14) / 0.08);
+          fairingLeft.position.set(-fairingSep * 1.6, 2.38 - fairingSep * 0.6, 0);
+          fairingLeft.rotation.z = fairingSep * 0.75;
+          fairingRight.position.set(fairingSep * 1.6, 2.38 - fairingSep * 0.6, 0);
+          fairingRight.rotation.z = -fairingSep * 0.75;
+
+          // Position spacecraft inside emerging fairing
+          craftRoot.position.set(
+            rocketGroup.position.x + Math.sin(-tiltZ) * 2.2,
+            rocketGroup.position.y + Math.cos(-tiltZ) * 2.2,
+            rocketGroup.position.z,
+          );
+          craftRoot.rotation.set(0.12, elapsed * 0.6, tiltZ);
+
+          // Launch exhaust particles
+          plumeMat.color.setHex(0xf59e0b);
           for (let i = 0; i < plumeCount; i++) {
-            const age = ((elapsed * 2.8 + i / plumeCount) % 1);
+            const age = (elapsed * 3.4 + i / plumeCount) % 1;
             _dummy.position.set(
-              _v1.x + (_v1.x - _v2.x) * age * 14 + (Math.sin(i * 7.3) * 0.08 * age),
-              _v1.y + (_v1.y - _v2.y) * age * 14 + (Math.cos(i * 4.1) * 0.08 * age),
-              _v1.z + (_v1.z - _v2.z) * age * 14,
+              rocketGroup.position.x - Math.sin(tiltZ) * (-2.6 - age * 4.5) + Math.sin(i * 5.2) * 0.25 * age,
+              rocketGroup.position.y + Math.cos(tiltZ) * (-2.6 - age * 4.5),
+              rocketGroup.position.z + Math.cos(i * 4.1) * 0.25 * age,
             );
-            const s = (1 - age) * 1.4;
-            _dummy.scale.setScalar(Math.max(0.05, s));
+            _dummy.scale.setScalar(Math.max(0.08, (1 - age) * 2.2));
             _dummy.updateMatrix();
             plumeParticles.setMatrixAt(i, _dummy.matrix);
           }
           plumeParticles.instanceMatrix.needsUpdate = true;
-        }
 
-        // Smooth chase camera
-        _targetCamPos.set(_v1.x + 3.6, _v1.y + 2.4, _v1.z + 5.2);
-        const k = 1 - Math.exp(-3.5 * dt);
-        camera.position.lerp(_targetCamPos, k);
-        controls.target.lerp(_v1, k);
+          _targetCamPos.set(rocketGroup.position.x + 4.8, rocketGroup.position.y + 1.4, 7.6);
+          _targetLook.copy(rocketGroup.position);
+          const k = 1 - Math.exp(-4 * dt);
+          camera.position.lerp(_targetCamPos, k);
+          controls.target.lerp(_targetLook, k);
+        } else {
+          // Orbital Cruise, Orbit Insertion & Glowing Trajectory Trail
+          rocketGroup.visible = false;
+          craftRoot.visible = true;
+          trailNodes.visible = true;
+
+          const orbitT = Math.min(0.999, Math.max(0.001, (simProg - 0.22) / 0.78));
+          orbitCurve.getPointAt(orbitT, _v1);
+          orbitCurve.getPointAt((orbitT + 0.01) % 1, _v2);
+          craftRoot.position.copy(_v1);
+          craftRoot.lookAt(_v2);
+          craftRoot.rotateX(Math.PI / 2);
+
+          // Glowing trajectory trail nodes behind craft
+          for (let i = 0; i < trailCount; i++) {
+            const backOffset = (i + 1) * 0.0055;
+            const tt = (orbitT - backOffset + 1) % 1;
+            orbitCurve.getPointAt(tt, _dummy.position);
+            _dummy.scale.setScalar(Math.max(0.15, (1 - i / trailCount) * 1.25));
+            _dummy.updateMatrix();
+            trailNodes.setMatrixAt(i, _dummy.matrix);
+          }
+          trailNodes.instanceMatrix.needsUpdate = true;
+
+          // Thruster burn particles during insertion & corrections
+          const firing = simProg < 0.34 || (simProg > 0.44 && simProg < 0.66);
+          plumeParticles.visible = firing;
+          if (firing) {
+            plumeMat.color.setHex(0x38bdf8);
+            for (let i = 0; i < plumeCount; i++) {
+              const age = (elapsed * 2.8 + i / plumeCount) % 1;
+              _dummy.position.set(
+                _v1.x + (_v1.x - _v2.x) * age * 14 + Math.sin(i * 7.3) * 0.08 * age,
+                _v1.y + (_v1.y - _v2.y) * age * 14 + Math.cos(i * 4.1) * 0.08 * age,
+                _v1.z + (_v1.z - _v2.z) * age * 14,
+              );
+              const s = (1 - age) * 1.4;
+              _dummy.scale.setScalar(Math.max(0.05, s));
+              _dummy.updateMatrix();
+              plumeParticles.setMatrixAt(i, _dummy.matrix);
+            }
+            plumeParticles.instanceMatrix.needsUpdate = true;
+          }
+
+          _targetCamPos.set(_v1.x + 3.6, _v1.y + 2.4, _v1.z + 5.2);
+          const k = 1 - Math.exp(-3.5 * dt);
+          camera.position.lerp(_targetCamPos, k);
+          controls.target.lerp(_v1, k);
+        }
       }
 
       if (controls.enableDamping) controls.update();
@@ -1072,8 +1217,16 @@ export function SpacecraftScene({
       atmoMat.dispose();
       orbitTubeGeo.dispose();
       orbitTubeMat.dispose();
+      trailGeo.dispose();
+      trailMat.dispose();
       plumeGeo.dispose();
       plumeMat.dispose();
+      rocketBodyGeo.dispose();
+      rocketInterstageGeo.dispose();
+      rocketNozzleGeo.dispose();
+      rocketFlameGeo.dispose();
+      fairingLeftGeo.dispose();
+      fairingRightGeo.dispose();
 
       kapton.map.dispose();
       kapton.bumpMap.dispose();
@@ -1091,6 +1244,7 @@ export function SpacecraftScene({
       matDish.dispose();
       matAccentCyan.dispose();
       matIonGlow.dispose();
+      matFlame.dispose();
       matLens.dispose();
       matRtgGlow.dispose();
 

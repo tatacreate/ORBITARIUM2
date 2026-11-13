@@ -204,13 +204,13 @@ export function MissionGuideModal({
 
                     <div className="space-y-1.5 text-[11px] font-mono-tab">
                       <div className="flex justify-between">
-                        <span className="text-slate-300">Small X-Band Patch:</span>
+                        <span className="text-slate-300">S-Band Omni Antenna:</span>
                         <span className={xBandCap >= dataGeneratedGBDay ? 'text-emerald-400' : 'text-rose-400'}>
                           {xBandCap} GB/d {xBandCap >= dataGeneratedGBDay ? '(OK)' : '(Bottleneck)'}
                         </span>
                       </div>
                       <div className="flex justify-between">
-                        <span className="text-slate-300">2.4m Ka-Band Dish:</span>
+                        <span className="text-slate-300">High-Gain Dish:</span>
                         <span className={kaBandCap >= dataGeneratedGBDay ? 'text-emerald-400' : 'text-amber-300'}>
                           {Math.min(320, kaBandCap)} GB/d {kaBandCap >= dataGeneratedGBDay ? '(OK)' : '(Tight)'}
                         </span>
@@ -354,10 +354,10 @@ export function MissionGuideModal({
                   <Compass className="h-3.5 w-3.5 text-cyan-400" />
                   Select Engineering Difficulty
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5">
-                  {(['junior', 'cadet', 'engineer', 'director', 'sandbox'] as DifficultyLevel[]).map((level) => {
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+                  {(['cadet', 'engineer', 'director', 'sandbox'] as DifficultyLevel[]).map((level) => {
                     const spec = DIFFICULTY_MODES[level];
-                    const active = currentDifficulty === level;
+                    const active = currentDifficulty === level || (level === 'cadet' && currentDifficulty === 'junior');
                     return (
                       <button
                         key={level}

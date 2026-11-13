@@ -1,18 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { onAuthStateChanged, type User } from 'firebase/auth';
 import { audioSynth } from './audio/synth';
-import { DebriefModal } from './components/DebriefModal';
-import { EngineeringDock } from './components/EngineeringDock';
+import { AstraAdvisor } from './components/AstraAdvisor';
 import { MissionArchiveModal } from './components/MissionArchiveModal';
-import { MissionBriefingModal } from './components/MissionBriefingModal';
-import { MissionGuideModal } from './components/MissionGuideModal';
 import { MissionDictionaryModal } from './components/MissionDictionaryModal';
-import { SimulationOverlay } from './components/SimulationOverlay';
+import { MissionGuideModal } from './components/MissionGuideModal';
+import { Phase1Briefing } from './components/Phase1Briefing';
+import { Phase2AssemblyBay } from './components/Phase2AssemblyBay';
+import { Phase3LaunchPlanner } from './components/Phase3LaunchPlanner';
+import { Phase4Simulation, type SimTelemetrySample } from './components/Phase4Simulation';
+import { Phase5Debrief } from './components/Phase5Debrief';
+import { PhaseHeader } from './components/PhaseHeader';
 import { TeamRoomModal } from './components/TeamRoomModal';
 import { TitleScreen } from './components/TitleScreen';
-import { TopTelemetryBar } from './components/TopTelemetryBar';
 import { DEFAULT_MISSION_CONFIG, OBJECTIVES } from './data/catalog';
 import {
+  buildTradeOffPopup,
   computeTelemetry,
   evaluateSimulationOutcome,
   generateFlightAnomalies,
@@ -37,10 +40,12 @@ import {
 import { SpacecraftScene } from './three/SpacecraftScene';
 import type {
   AnomalyChoice,
+  BuilderCategory,
   CameraPreset,
   DifficultyLevel,
   EngineeringRole,
   FlightAnomaly,
+  GamePhase,
   MissionArchetype,
   MissionChallengeMode,
   MissionConfig,
@@ -49,23 +54,24 @@ import type {
   RoomState,
   SimulationOutcome,
   SubsystemTab,
+  TradeOffPopup,
 } from './types/mission';
-
-type AppPhase = 'title' | 'briefing' | 'designing' | 'simulating' | 'debrief';
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [authLoading, setAuthLoading] = useState(false);
 
-  const [phase, setPhase] = useState<AppPhase>('title');
+  const [phase, setPhase] = useState<GamePhase>('title');
   const [config, setConfig] = useState<MissionConfig>(DEFAULT_MISSION_CONFIG);
-  const [activeTab, setActiveTab] = useState<SubsystemTab>('mission');
+  const [soloRole, setSoloRole] = useState<EngineeringRole>('director');
+  const [activeCategory, setActiveCategory] = useState<BuilderCategory>('bus');
   const [dockCollapsed, setDockCollapsed] = useState(false);
   const [explodeAmount, setExplodeAmount] = useState(0);
   const [cameraPreset, setCameraPreset] = useState<CameraPreset>('hero');
   const [cameraPresetNonce, setCameraPresetNonce] = useState(0);
   const [muted, setMuted] = useState(false);
+  const [tradeOffPopup, setTradeOffPopup] = useState<TradeOffPopup | null>(null);
 
   // Multi-run iteration tracking
   const [soloRunCount, setSoloRunCount] = useState(1);
@@ -82,18 +88,19 @@ export default function App() {
   const [showArchiveModal, setShowArchiveModal] = useState(false);
   const [showGuideModal, setShowGuideModal] = useState(false);
   const [showDictionaryModal, setShowDictionaryModal] = useState(false);
-  const [showBriefingModal, setShowBriefingModal] = useState(false);
   const [toastError, setToastError] = useState<string | null>(null);
 
   // Simulation State
   const [simProgress, setSimProgress] = useState(0);
+  const [simSpeed, setSimSpeed] = useState<1 | 2>(1);
   const [simSeed, setSimSeed] = useState(1042);
   const [anomalies, setAnomalies] = useState<FlightAnomaly[]>([]);
   const [resolvedAnomalyIds, setResolvedAnomalyIds] = useState<string[]>([]);
   const [activeAnomaly, setActiveAnomaly] = useState<FlightAnomaly | null>(null);
   const [chosenActions, setChosenActions] = useState<
-    { scienceDelta: number; marginDelta: number; collabDelta: number }[]
+    { scienceDelta: number; marginDelta: number; collabDelta: number; powerShiftW?: number; dataShiftPct?: number }[]
   >([]);
+  const [simSamples, setSimSamples] = useState<SimTelemetrySample[]>([]);
   const [outcome, setOutcome] = useState<SimulationOutcome | null>(null);
   const [savedMissionId, setSavedMissionId] = useState<string | null>(null);
   const [savingMission, setSavingMission] = useState(false);
@@ -147,9 +154,13 @@ export default function App() {
         });
         if (nextRoom.status === 'simulating') {
           setSimSeed(nextRoom.simulationSeed);
-          setPhase((prev) => (prev === 'designing' ? 'simulating' : prev));
+          setPhase((prev) =>
+            prev === 'briefing' || prev === 'assembly' || prev === 'planner'
+              ? 'simulating'
+              : prev,
+          );
         } else if (nextRoom.status === 'designing') {
-          setPhase((prev) => (prev === 'debrief' ? 'designing' : prev));
+          setPhase((prev) => (prev === 'debrief' ? 'assembly' : prev));
         }
       },
       setMembers,
@@ -164,6 +175,15 @@ export default function App() {
       setToastError((curr) => (curr === msg ? null : curr));
     }, 4500);
   }, []);
+
+  // Auto-dismiss trade-off popup after 6.5 seconds
+  useEffect(() => {
+    if (!tradeOffPopup) return;
+    const timer = setTimeout(() => {
+      setTradeOffPopup((curr) => (curr?.id === tradeOffPopup.id ? null : curr));
+    }, 6500);
+    return () => clearTimeout(timer);
+  }, [tradeOffPopup]);
 
   const handleSignIn = async () => {
     setAuthLoading(true);
@@ -210,8 +230,8 @@ export default function App() {
     setConfig(startConfig);
     setRoomId(code);
     setPreviousScore(null);
-    setPhase('designing');
-    setActiveTab('team');
+    setPhase('assembly');
+    setActiveCategory('team');
   };
 
   const handleJoinRoom = async (code: string) => {
@@ -220,8 +240,8 @@ export default function App() {
     audioSynth.playMountPart();
     setRoomId(joined.roomId);
     setPreviousScore(null);
-    setPhase('designing');
-    setActiveTab('team');
+    setPhase('assembly');
+    setActiveCategory('team');
   };
 
   const handleUpdateConfig = useCallback(
@@ -229,6 +249,10 @@ export default function App() {
       audioSynth.playMountPart();
       setConfig((prev) => {
         const next = { ...prev, ...patch };
+        if (changeSummary && phase === 'assembly') {
+          const popup = buildTradeOffPopup(prev, next, changeSummary);
+          if (popup) setTradeOffPopup(popup);
+        }
         if (roomId && user && roomState?.status === 'designing') {
           void updateRoomConfig(roomId, next).catch((err) =>
             showToast(err instanceof Error ? err.message : 'Sync failed.'),
@@ -241,7 +265,7 @@ export default function App() {
         return next;
       });
     },
-    [roomId, user, roomState?.status, members, showToast],
+    [roomId, user, roomState?.status, members, showToast, phase],
   );
 
   const handleChangeDifficulty = (difficulty: DifficultyLevel) => {
@@ -258,9 +282,8 @@ export default function App() {
   };
 
   const handleApplyArchetype = (arch: MissionArchetype) => {
-    handleUpdateConfig(arch.patch, `Loaded ${arch.name} architecture`);
-    setShowBriefingModal(false);
-    setPhase('designing');
+    handleUpdateConfig(arch.patch, `Loaded ${arch.name} blueprint`);
+    setPhase('assembly');
   };
 
   const handleChangeRole = async (role: EngineeringRole) => {
@@ -311,6 +334,7 @@ export default function App() {
       setResolvedAnomalyIds([]);
       setActiveAnomaly(null);
       setChosenActions([]);
+      setSimSamples([]);
       setOutcome(null);
       setSavedMissionId(null);
       setPublishedLeaderboardId(null);
@@ -335,11 +359,13 @@ export default function App() {
       setResolvedAnomalyIds([]);
       setActiveAnomaly(null);
       setChosenActions([]);
+      setSimSamples([]);
     }
   }, [phase, anomalies.length, config, simSeed]);
 
   const simStateRef = useRef({
     phase,
+    simSpeed,
     activeAnomaly,
     anomalies,
     resolvedAnomalyIds,
@@ -351,6 +377,7 @@ export default function App() {
   });
   simStateRef.current = {
     phase,
+    simSpeed,
     activeAnomaly,
     anomalies,
     resolvedAnomalyIds,
@@ -365,6 +392,7 @@ export default function App() {
     if (phase !== 'simulating') return;
     let rafId = 0;
     let lastTime = performance.now();
+    let lastSampleAt = 0;
 
     const step = (now: number) => {
       const dt = Math.min((now - lastTime) / 1000, 0.05);
@@ -375,17 +403,47 @@ export default function App() {
 
       if (!s.activeAnomaly) {
         setSimProgress((prev) => {
-          const next = Math.min(1, prev + dt * 0.095);
+          const speedMult = s.simSpeed === 2 ? 1.85 : 1.0;
+          const next = Math.min(1, prev + dt * 0.075 * speedMult);
 
           const pending = s.anomalies.find(
-            (a) =>
-              !s.resolvedAnomalyIds.includes(a.id) &&
-              ((a.phaseIndex === 1 && next >= 0.32) || (a.phaseIndex === 3 && next >= 0.78)),
+            (a) => !s.resolvedAnomalyIds.includes(a.id) && next >= a.triggerProgress,
           );
           if (pending) {
             audioSynth.playAlert();
             setActiveAnomaly(pending);
             return prev;
+          }
+
+          // Sample telemetry every ~0.25s for live resource graph
+          if (now - lastSampleAt > 240) {
+            lastSampleAt = now;
+            const powerShift = s.chosenActions.reduce((acc, a) => acc + (a.powerShiftW || 0), 0);
+            const dataShift = s.chosenActions.reduce((acc, a) => acc + (a.dataShiftPct || 0), 0);
+            const basePowerPct = Math.max(
+              15,
+              Math.min(
+                98,
+                72 + ((s.telemetry.powerMarginW + powerShift) / Math.max(200, s.telemetry.powerGeneratedW)) * 35,
+              ),
+            );
+            const ripple = Math.sin(next * 24) * 5;
+            const baseDataPct = Math.max(
+              10,
+              Math.min(
+                98,
+                (s.telemetry.dataGeneratedGBDay / Math.max(1, s.telemetry.downlinkCapacityGBDay)) * 55 + dataShift,
+              ),
+            );
+            setSimSamples((old) => [
+              ...old.slice(-36),
+              {
+                progress: next,
+                powerPct: Math.max(8, Math.min(98, basePowerPct + ripple)),
+                dataPct: Math.max(8, Math.min(98, baseDataPct + Math.cos(next * 19) * 4)),
+                sciencePct: Math.round(next * 100),
+              },
+            ]);
           }
 
           if (next >= 1) {
@@ -427,12 +485,14 @@ export default function App() {
         scienceDelta: choice.scienceDelta,
         marginDelta: choice.marginDelta,
         collabDelta: choice.collabDelta,
+        powerShiftW: choice.powerShiftW,
+        dataShiftPct: choice.dataShiftPct,
       },
     ]);
     setActiveAnomaly(null);
   };
 
-  const handleIterateDesign = async () => {
+  const handleIterateDesign = async (targetPhase: 'assembly' | 'planner') => {
     if (outcome) {
       setPreviousScore(outcome.totalScore);
     }
@@ -442,7 +502,7 @@ export default function App() {
     } else {
       setSoloRunCount((c) => c + 1);
     }
-    setPhase('designing');
+    setPhase(targetPhase);
   };
 
   const handleSaveMission = async () => {
@@ -491,8 +551,22 @@ export default function App() {
   const handleLoadConfig = (nextConfig: MissionConfig, label: string) => {
     handleUpdateConfig(nextConfig, label);
     if (phase === 'title' || phase === 'briefing') {
-      setPhase('designing');
+      setPhase('assembly');
     }
+  };
+
+  const handleSceneSubsystemSelect = (tab: SubsystemTab) => {
+    audioSynth.playSelect();
+    const mapped: BuilderCategory =
+      tab === 'payload'
+        ? 'science'
+        : tab === 'power'
+          ? 'power'
+          : tab === 'team'
+            ? 'team'
+            : 'bus';
+    setActiveCategory(mapped);
+    setDockCollapsed(false);
   };
 
   useEffect(() => {
@@ -505,28 +579,36 @@ export default function App() {
         phase === 'title' &&
         !showTeamModal &&
         !showArchiveModal &&
-        !showGuideModal
+        !showGuideModal &&
+        !showDictionaryModal
       ) {
         e.preventDefault();
         handleStartSolo();
-      } else if ((e.key === 'h' || e.key === 'H') && phase === 'designing') {
+      } else if ((e.key === 'h' || e.key === 'H') && phase === 'assembly') {
         e.preventDefault();
         setDockCollapsed((prev) => !prev);
       } else if (e.key === 'Escape') {
         setShowTeamModal(false);
         setShowArchiveModal(false);
         setShowGuideModal(false);
-        setShowBriefingModal(false);
+        setShowDictionaryModal(false);
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [phase, showTeamModal, showArchiveModal, showGuideModal]);
+  }, [phase, showTeamModal, showArchiveModal, showGuideModal, showDictionaryModal]);
 
-  const sceneMode: 'title' | 'hangar' | 'orbit' =
-    phase === 'title' ? 'title' : phase === 'simulating' || phase === 'debrief' ? 'orbit' : 'hangar';
+  const sceneMode: 'title' | 'hangar' | 'planner' | 'orbit' =
+    phase === 'title'
+      ? 'title'
+      : phase === 'planner'
+        ? 'planner'
+        : phase === 'simulating' || phase === 'debrief'
+          ? 'orbit'
+          : 'hangar';
 
-  const currentPhaseIndex = Math.min(3, Math.floor(simProgress * 4));
+  const currentPhaseIndex =
+    simProgress < 0.22 ? 0 : simProgress < 0.45 ? 1 : simProgress < 0.72 ? 2 : 3;
   const activeRunCount = roomId ? roomState?.runCount || 1 : soloRunCount;
 
   return (
@@ -534,16 +616,38 @@ export default function App() {
       <SpacecraftScene
         config={config}
         sceneMode={sceneMode}
-        explodeAmount={phase === 'designing' ? explodeAmount : 0}
+        explodeAmount={phase === 'assembly' ? explodeAmount : 0}
         cameraPreset={cameraPreset}
         cameraPresetNonce={cameraPresetNonce}
         simProgress={simProgress}
-        onSelectSubsystem={(tab) => {
-          audioSynth.playSelect();
-          setActiveTab(tab);
-          setDockCollapsed(false);
-        }}
+        onSelectSubsystem={handleSceneSubsystemSelect}
       />
+
+      {phase !== 'title' && (
+        <PhaseHeader
+          phase={phase}
+          config={config}
+          telemetry={telemetry}
+          roomId={roomId}
+          memberCount={Math.max(1, members.length)}
+          runCount={activeRunCount}
+          muted={muted}
+          onNavigatePhase={(target) => {
+            audioSynth.playSelect();
+            if (target === 'title') setExplodeAmount(0);
+            setPhase(target);
+          }}
+          onToggleMute={() => {
+            const next = !muted;
+            audioSynth.muted = next;
+            setMuted(next);
+          }}
+          onOpenDictionary={() => setShowDictionaryModal(true)}
+          onOpenTeamModal={() => setShowTeamModal(true)}
+          onOpenArchive={() => setShowArchiveModal(true)}
+          onLaunchMission={() => void handleStartSimulationClick()}
+        />
+      )}
 
       {phase === 'title' && (
         <TitleScreen
@@ -561,90 +665,99 @@ export default function App() {
       )}
 
       {phase === 'briefing' && (
-        <MissionBriefingModal
+        <Phase1Briefing
           config={config}
-          isInitialBriefing={true}
-          onSelectObjective={handleSelectBriefingObjective}
-          onApplyArchetype={handleApplyArchetype}
-          onConfirmEnterHangar={() => {
+          roomId={roomId}
+          selectedSoloRole={soloRole}
+          onSelectSoloRole={(r) => {
             audioSynth.playSelect();
-            setPhase('designing');
+            setSoloRole(r);
+          }}
+          onSelectDifficulty={handleChangeDifficulty}
+          onSelectObjective={handleSelectBriefingObjective}
+          onSelectConstraint={(constraintEventId) =>
+            handleUpdateConfig({ constraintEventId }, 'Changed flight weather')
+          }
+          onApplyArchetype={handleApplyArchetype}
+          onOpenTeamRoomModal={() => setShowTeamModal(true)}
+          onEnterAssemblyBay={() => {
+            audioSynth.playSelect();
+            setPhase('assembly');
           }}
         />
       )}
 
-      {phase === 'designing' && (
-        <>
-          <TopTelemetryBar
-            config={config}
-            telemetry={telemetry}
-            roomId={roomId}
-            memberCount={Math.max(1, members.length)}
-            runCount={activeRunCount}
-            muted={muted}
-            onToggleMute={() => {
-              const next = !muted;
-              audioSynth.muted = next;
-              setMuted(next);
-            }}
-            onBackToTitle={() => {
-              setPhase('title');
-              setExplodeAmount(0);
-            }}
-            onOpenTeamModal={() => setShowTeamModal(true)}
-            onOpenArchive={() => setShowArchiveModal(true)}
-            onOpenGuide={() => setShowGuideModal(true)}
-            onOpenBriefing={() => setShowBriefingModal(true)}
-            onStartSimulation={() => void handleStartSimulationClick()}
-          />
+      {phase === 'assembly' && (
+        <Phase2AssemblyBay
+          config={config}
+          telemetry={telemetry}
+          activeCategory={activeCategory}
+          collapsed={dockCollapsed}
+          explodeAmount={explodeAmount}
+          cameraPreset={cameraPreset}
+          tradeOffPopup={tradeOffPopup}
+          roomId={roomId}
+          members={members}
+          messages={messages}
+          currentUid={user?.uid || null}
+          onChangeCategory={(cat) => {
+            audioSynth.playSelect();
+            setActiveCategory(cat);
+          }}
+          onToggleCollapse={() => setDockCollapsed((c) => !c)}
+          onChangeExplode={setExplodeAmount}
+          onSelectCamera={(preset) => {
+            audioSynth.playSelect();
+            setCameraPreset(preset);
+            setCameraPresetNonce((n) => n + 1);
+          }}
+          onUpdateConfig={handleUpdateConfig}
+          onDismissTradeOff={() => setTradeOffPopup(null)}
+          onChangeRole={(role) => void handleChangeRole(role)}
+          onToggleReady={() => void handleToggleReady()}
+          onSendMessage={(text) => void handleSendMessage(text)}
+          onOpenDictionary={() => setShowDictionaryModal(true)}
+          onOpenTeamModal={() => setShowTeamModal(true)}
+          onProceedToPlanner={() => {
+            audioSynth.playSelect();
+            setExplodeAmount(0);
+            setPhase('planner');
+          }}
+        />
+      )}
 
-          <EngineeringDock
-            config={config}
-            telemetry={telemetry}
-            activeTab={activeTab}
-            collapsed={dockCollapsed}
-            explodeAmount={explodeAmount}
-            cameraPreset={cameraPreset}
-            roomId={roomId}
-            members={members}
-            messages={messages}
-            currentUid={user?.uid || null}
-            onChangeTab={(tab) => {
-              audioSynth.playSelect();
-              setActiveTab(tab);
-            }}
-            onToggleCollapse={() => setDockCollapsed((c) => !c)}
-            onChangeExplode={setExplodeAmount}
-            onSelectCamera={(preset) => {
-              audioSynth.playSelect();
-              setCameraPreset(preset);
-              setCameraPresetNonce((n) => n + 1);
-            }}
-            onUpdateConfig={handleUpdateConfig}
-            onChangeRole={(role) => void handleChangeRole(role)}
-            onToggleReady={() => void handleToggleReady()}
-            onSendMessage={(text) => void handleSendMessage(text)}
-            onOpenTeamModal={() => setShowTeamModal(true)}
-            onOpenBriefing={() => setShowBriefingModal(true)}
-            onOpenDictionary={() => setShowDictionaryModal(true)}
-          />
-        </>
+      {phase === 'planner' && (
+        <Phase3LaunchPlanner
+          config={config}
+          telemetry={telemetry}
+          onUpdateConfig={handleUpdateConfig}
+          onBackToAssembly={() => {
+            audioSynth.playSelect();
+            setPhase('assembly');
+          }}
+          onLaunchSimulation={() => void handleStartSimulationClick()}
+        />
       )}
 
       {phase === 'simulating' && (
-        <SimulationOverlay
+        <Phase4Simulation
           config={config}
           telemetry={telemetry}
           simProgress={simProgress}
+          simSpeed={simSpeed}
           currentPhaseIndex={currentPhaseIndex}
+          samples={simSamples}
           activeAnomaly={activeAnomaly}
+          resolvedCount={resolvedAnomalyIds.length}
+          totalAnomalies={anomalies.length}
+          onToggleSpeed={() => setSimSpeed((s) => (s === 1 ? 2 : 1))}
           onResolveAnomaly={handleResolveAnomaly}
-          onAbortSimulation={() => setPhase('designing')}
+          onAbortSimulation={() => setPhase('planner')}
         />
       )}
 
       {phase === 'debrief' && outcome && (
-        <DebriefModal
+        <Phase5Debrief
           config={config}
           telemetry={telemetry}
           outcome={outcome}
@@ -660,9 +773,19 @@ export default function App() {
           onSaveMission={() => void handleSaveMission()}
           onPublishLeaderboard={() => void handlePublishLeaderboard()}
           onSignIn={() => void handleSignIn()}
-          onRedesign={() => void handleIterateDesign()}
+          onModifyInAssembly={() => void handleIterateDesign('assembly')}
+          onModifyInPlanner={() => void handleIterateDesign('planner')}
         />
       )}
+
+      {/* Corner A.S.T.R.A. Friendly AI Mission Advisor */}
+      <AstraAdvisor
+        phase={phase}
+        config={config}
+        telemetry={telemetry}
+        activeAnomalyTitle={activeAnomaly?.title || null}
+        onOpenDictionary={() => setShowDictionaryModal(true)}
+      />
 
       {showTeamModal && (
         <TeamRoomModal
@@ -694,24 +817,11 @@ export default function App() {
       )}
 
       {showDictionaryModal && (
-        <MissionDictionaryModal
-          onClose={() => setShowDictionaryModal(false)}
-        />
-      )}
-
-      {showBriefingModal && phase === 'designing' && (
-        <MissionBriefingModal
-          config={config}
-          isInitialBriefing={false}
-          onSelectObjective={handleSelectBriefingObjective}
-          onApplyArchetype={handleApplyArchetype}
-          onConfirmEnterHangar={() => setShowBriefingModal(false)}
-          onClose={() => setShowBriefingModal(false)}
-        />
+        <MissionDictionaryModal onClose={() => setShowDictionaryModal(false)} />
       )}
 
       {toastError && (
-        <div className="fixed top-14 right-4 z-40 max-w-sm border border-rose-500/60 bg-[#090d16] px-4 py-3 text-xs text-rose-200 shadow-xl">
+        <div className="fixed top-14 right-4 z-50 max-w-sm border border-rose-500/60 bg-[#090d16] px-4 py-3 text-xs text-rose-200 shadow-xl">
           {toastError}
         </div>
       )}
