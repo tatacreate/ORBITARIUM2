@@ -1,15 +1,13 @@
 import { useState } from 'react';
 import {
   ArrowRight,
+  BatteryCharging,
   Compass,
-  Cpu,
-  Database,
-  DollarSign,
   Flame,
+  Gamepad2,
   Globe,
-  Info,
+  Rocket,
   Scale,
-  Sparkles,
   Wrench,
   Zap,
 } from 'lucide-react';
@@ -37,14 +35,76 @@ interface MissionSetupSegmentProps {
 }
 
 const REGIME_TABS: { id: 'all' | GmatMissionRegime; label: string }[] = [
-  { id: 'all', label: 'All Regimes (6)' },
-  { id: 'leo', label: 'LEO Climate' },
-  { id: 'geo', label: 'GEO Comms' },
-  { id: 'heo', label: 'HEO Molniya' },
-  { id: 'lunar', label: 'Lunar Recon' },
-  { id: 'lagrange', label: 'L2 Lagrange' },
-  { id: 'interplanetary', label: 'Mars Transfer' },
+  { id: 'all', label: 'All Worlds' },
+  { id: 'leo', label: 'Earth Ice' },
+  { id: 'geo', label: 'Earth Comms' },
+  { id: 'heo', label: 'Aurora Orbit' },
+  { id: 'lunar', label: 'The Moon' },
+  { id: 'lagrange', label: 'Deep Space' },
+  { id: 'interplanetary', label: 'Mars' },
 ];
+
+const FUN_MISSION_BLURBS: Record<string, { shortTitle: string; funGoal: string; distanceTag: string; color: string }> = {
+  'leo-earth-climate': {
+    shortTitle: 'Arctic Ice & Climate Patrol',
+    funGoal: 'Zoom low over Earth’s North Pole to snap glowing ice sheets and northern storms!',
+    distanceTag: 'Close Orbit · Easy',
+    color: 'from-cyan-500/20 to-sky-600/10 border-cyan-500/40',
+  },
+  'geo-comms-relay': {
+    shortTitle: 'Super-High Sky Relay',
+    funGoal: 'Park super high above Earth so your laser beam stays locked onto cities nonstop!',
+    distanceTag: 'High Orbit · Medium',
+    color: 'from-indigo-500/20 to-blue-600/10 border-indigo-400/40',
+  },
+  'heo-magnetosphere': {
+    shortTitle: 'Northern Lights Chaser',
+    funGoal: 'Slingshot in a giant egg-shaped loop to surf Earth’s shimmering green auroras!',
+    distanceTag: 'Looping Orbit · Medium',
+    color: 'from-emerald-500/20 to-teal-600/10 border-emerald-400/40',
+  },
+  'lunar-gateway-recon': {
+    shortTitle: 'Moon Crater Ice Hunt',
+    funGoal: 'Fly to the Moon and shine radar into freezing dark craters hiding sparkling water ice!',
+    distanceTag: 'Lunar Flight · Challenge',
+    color: 'from-slate-400/20 to-cyan-500/10 border-slate-400/50',
+  },
+  'l2-deep-space': {
+    shortTitle: 'Exoplanet Telescope Quest',
+    funGoal: 'Float far behind Earth in deep space to photograph colorful alien worlds and nebulas!',
+    distanceTag: 'Deep Space · Pro',
+    color: 'from-purple-500/20 to-amber-500/10 border-purple-400/40',
+  },
+  'interplanetary-mars': {
+    shortTitle: 'Red Planet Ice Expedition',
+    funGoal: 'Blast all the way to Mars to discover hidden underground lakes and red dust storms!',
+    distanceTag: 'Mars Voyage · Epic',
+    color: 'from-orange-500/25 to-rose-600/10 border-orange-400/50',
+  },
+};
+
+const FRIENDLY_GADGET_COPY: Record<string, { nick: string; funLine: string }> = {
+  'radar-sar': {
+    nick: 'Cloud-Piercing Radar',
+    funLine: 'Sees straight through thick clouds and dark Moon craters!',
+  },
+  'canadarm-3': {
+    nick: 'Canadarm3 Robot Claw',
+    funLine: 'Canadian robotic arm that catches supply pods in zero gravity!',
+  },
+  'spec-highres': {
+    nick: 'Rainbow Molecule Scanner',
+    funLine: 'Spots hidden water, methane gas, and alien air colors!',
+  },
+  'cam-multispec': {
+    nick: 'Super Planet Camera',
+    funLine: 'Takes vivid full-color space snapshots of storms and forests!',
+  },
+  'mag-boom': {
+    nick: 'Aurora & Ice Detector',
+    funLine: 'Senses glowing magnetic storms and underground frozen water!',
+  },
+};
 
 export function MissionSetupSegment({
   architectMode,
@@ -68,63 +128,61 @@ export function MissionSetupSegment({
 
   const activeInstruments = instruments.filter((i) => i.enabled);
   const totalPayloadMassKg = activeInstruments.reduce((sum, i) => sum + i.massKg, 0) + 420;
-  const totalPowerW = activeInstruments.reduce((sum, i) => sum + i.powerDrawW, 0) + 120;
+  const massPct = Math.min(100, Math.round((totalPayloadMassKg / selectedObjective.maxPayloadMassKg) * 100));
   const isOverMass = totalPayloadMassKg > selectedObjective.maxPayloadMassKg;
+  const fuelPct = Math.round(((propellantBudgetKg - 150) / (2500 - 150)) * 100);
 
   return (
     <div className="space-y-5">
-      {/* Segment Header */}
-      <div className="flex flex-wrap items-center justify-between gap-4 border border-slate-800 bg-[#080d19] p-4 shadow-xl">
+      {/* Arcade Header Banner */}
+      <div className="flex flex-wrap items-center justify-between gap-4 border border-cyan-500/30 bg-[#091122] p-5 shadow-xl">
         <div>
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="border border-cyan-500/50 bg-cyan-950/40 px-2 py-0.5 font-mono-tab text-[10px] font-bold uppercase tracking-wider text-cyan-300">
-              NASA Phase A: Concept &amp; Requirements Definition
-            </span>
-            <span className="text-xs text-slate-400">
-              NASA SP-2016-6105 · GMAT Astrodynamics · CSA International Payloads
-            </span>
+          <div className="flex items-center gap-2 text-xs font-semibold text-cyan-300">
+            <Compass className="h-4 w-4" />
+            <span>Step 1 · Pick Your Space Adventure</span>
           </div>
-          <h2 className="mt-1 font-display text-xl md:text-2xl font-bold text-white">
-            Mission Setup: Scientific Need, International Payloads &amp; Constraints
+          <h2 className="mt-1 font-display text-2xl md:text-3xl font-black tracking-tight text-white">
+            Choose a Planet &amp; Build Your Craft
           </h2>
-          <p className="mt-1 text-xs text-slate-300">
-            Choose Cadet Challenge (guided mission goals &amp; badges) or Sandbox Architect Mode, select a GMAT regime, and equip joint NASA &amp; CSA instruments.
+          <p className="mt-1 text-sm text-slate-300">
+            Pick where you want to explore, snap on fun NASA &amp; Canadian Space Agency gadgets, then blast off!
           </p>
         </div>
 
         <button
           type="button"
           onClick={onProceedToLaunch}
-          className="flex items-center gap-2 bg-cyan-500 px-5 py-2.5 text-xs font-bold text-slate-950 hover:bg-cyan-400 transition-colors cursor-pointer shrink-0 shadow-lg shadow-cyan-500/20 whitespace-nowrap"
+          className="flex items-center gap-2.5 bg-gradient-to-r from-amber-400 to-orange-500 px-6 py-3.5 text-sm font-black text-slate-950 hover:from-amber-300 hover:to-orange-400 transition-all cursor-pointer shrink-0 shadow-lg shadow-amber-500/25 whitespace-nowrap"
         >
-          <span>Segment 1: Launch &amp; Injection</span>
+          <Rocket className="h-5 w-5" />
+          <span>GO TO LAUNCHPAD!</span>
           <ArrowRight className="h-4 w-4" />
         </button>
       </div>
 
-      {/* Cadet Challenge vs Sandbox Architect Toggle Bar */}
+      {/* Play Mode Selector */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         <button
           type="button"
           onClick={() => onChangeArchitectMode('cadet')}
-          className={`flex items-start gap-3 border p-3.5 text-left transition-colors cursor-pointer ${
+          className={`flex items-center gap-3.5 border p-4 text-left transition-all cursor-pointer ${
             architectMode === 'cadet'
-              ? 'border-cyan-400 bg-cyan-950/30 ring-1 ring-cyan-500/40'
+              ? 'border-cyan-400 bg-cyan-950/35 ring-1 ring-cyan-400/50'
               : 'border-slate-800 bg-[#080d19] hover:border-slate-700'
           }`}
         >
-          <Sparkles className={`h-5 w-5 shrink-0 mt-0.5 ${architectMode === 'cadet' ? 'text-cyan-400' : 'text-slate-400'}`} />
+          <div className="h-10 w-10 flex items-center justify-center bg-cyan-500/20 border border-cyan-400/40 shrink-0">
+            <Gamepad2 className="h-5 w-5 text-cyan-300" />
+          </div>
           <div>
             <div className="flex items-center gap-2">
-              <span className="font-display text-sm font-bold text-white">Cadet Challenge (Gamified Guided Mode)</span>
+              <span className="font-display text-base font-bold text-white">Adventure Mode</span>
               {architectMode === 'cadet' && (
-                <span className="font-mono-tab text-[10px] font-bold text-cyan-300 border border-cyan-500/40 bg-cyan-950/60 px-1.5 py-0.5">
-                  ACTIVE
-                </span>
+                <span className="text-[11px] font-bold text-cyan-300">· Selected</span>
               )}
             </div>
-            <p className="mt-1 text-xs text-slate-300">
-              Guided NASA–CSA objectives, active orbital mini-challenges in Segment 2, Mission Rank Badges, and unlockable Space Science Discovery Cards.
+            <p className="mt-0.5 text-xs text-slate-300">
+              Earn up to 3 Stars, dodge space junk, catch supply pods, and unlock colorful Discovery Cards!
             </p>
           </div>
         </button>
@@ -132,31 +190,31 @@ export function MissionSetupSegment({
         <button
           type="button"
           onClick={() => onChangeArchitectMode('sandbox')}
-          className={`flex items-start gap-3 border p-3.5 text-left transition-colors cursor-pointer ${
+          className={`flex items-center gap-3.5 border p-4 text-left transition-all cursor-pointer ${
             architectMode === 'sandbox'
-              ? 'border-amber-400 bg-amber-950/25 ring-1 ring-amber-500/40'
+              ? 'border-amber-400 bg-amber-950/25 ring-1 ring-amber-400/50'
               : 'border-slate-800 bg-[#080d19] hover:border-slate-700'
           }`}
         >
-          <Wrench className={`h-5 w-5 shrink-0 mt-0.5 ${architectMode === 'sandbox' ? 'text-amber-400' : 'text-slate-400'}`} />
+          <div className="h-10 w-10 flex items-center justify-center bg-amber-500/20 border border-amber-400/40 shrink-0">
+            <Wrench className="h-5 w-5 text-amber-300" />
+          </div>
           <div>
             <div className="flex items-center gap-2">
-              <span className="font-display text-sm font-bold text-white">Sandbox Architect Mode (Unrestricted Lab)</span>
+              <span className="font-display text-base font-bold text-white">Free Play Sandbox</span>
               {architectMode === 'sandbox' && (
-                <span className="font-mono-tab text-[10px] font-bold text-amber-300 border border-amber-500/40 bg-amber-950/60 px-1.5 py-0.5">
-                  ACTIVE
-                </span>
+                <span className="text-[11px] font-bold text-amber-300">· Selected</span>
               )}
             </div>
-            <p className="mt-1 text-xs text-slate-300">
-              Free-form astrodynamics laboratory: test any rocket, payload mass, and Delta-v maneuver freely without lockouts between segments.
+            <p className="mt-0.5 text-xs text-slate-300">
+              No limits! Experiment with any rocket, sling orbits wildly, and snap every planet landmark at your own pace.
             </p>
           </div>
         </button>
       </div>
 
-      {/* Regime Filter Tabs */}
-      <div className="flex items-center gap-1 overflow-x-auto border-b border-slate-800 pb-2">
+      {/* Destination Filter */}
+      <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
         {REGIME_TABS.map((tab) => {
           const isActive = activeRegimeFilter === tab.id;
           return (
@@ -164,10 +222,10 @@ export function MissionSetupSegment({
               key={tab.id}
               type="button"
               onClick={() => setActiveRegimeFilter(tab.id)}
-              className={`px-3 py-1.5 text-xs font-medium font-mono-tab transition-all cursor-pointer whitespace-nowrap ${
+              className={`px-3.5 py-2 text-xs font-bold transition-all cursor-pointer whitespace-nowrap border ${
                 isActive
-                  ? 'border-b-2 border-cyan-400 bg-cyan-950/40 text-cyan-300 font-bold'
-                  : 'text-slate-400 hover:text-white hover:bg-slate-900/50'
+                  ? 'border-cyan-400 bg-cyan-500 text-slate-950'
+                  : 'border-slate-800 bg-slate-900/70 text-slate-300 hover:text-white'
               }`}
             >
               {tab.label}
@@ -176,210 +234,198 @@ export function MissionSetupSegment({
         })}
       </div>
 
-      {/* Selectable NASA / GMAT Scientific Objectives */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
+      {/* Vibrant Destination Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {filteredObjectives.map((obj) => {
           const isSelected = obj.id === selectedObjective.id;
-          const targetBodyData = CELESTIAL_BODIES[obj.targetBody];
+          const bodyData = CELESTIAL_BODIES[obj.targetBody];
+          const meta = FUN_MISSION_BLURBS[obj.id] || {
+            shortTitle: obj.title,
+            funGoal: obj.summary,
+            distanceTag: bodyData.name,
+            color: 'from-cyan-500/20 to-slate-900 border-slate-700',
+          };
 
           return (
             <button
               key={obj.id}
               type="button"
               onClick={() => onSelectObjective(obj)}
-              className={`flex flex-col justify-between text-left border p-4 transition-all cursor-pointer ${
-                isSelected
-                  ? 'border-cyan-400 bg-cyan-950/35 ring-1 ring-cyan-500/50'
-                  : 'border-slate-800 bg-slate-900/60 hover:border-slate-600'
+              className={`flex flex-col justify-between text-left border p-4 transition-all cursor-pointer bg-gradient-to-br ${meta.color} ${
+                isSelected ? 'ring-2 ring-cyan-300 scale-[1.01]' : 'opacity-85 hover:opacity-100'
               }`}
             >
               <div>
                 <div className="flex items-center justify-between gap-2">
-                  <span className="font-mono-tab text-[10px] uppercase tracking-wider text-cyan-400 font-bold">
-                    {obj.regime.toUpperCase()} · {targetBodyData.name}
-                  </span>
-                  <span className="font-mono-tab text-xs font-bold text-amber-300">
-                    Cap ${obj.budgetCapM}M
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span
+                      className="h-5 w-5 rounded-full border border-white/40 inline-block shrink-0 shadow-inner"
+                      style={{
+                        background:
+                          obj.targetBody === 'mars'
+                            ? 'radial-gradient(circle at 30% 30%, #fb923c, #9a3412)'
+                            : obj.targetBody === 'moon'
+                              ? 'radial-gradient(circle at 30% 30%, #f1f5f9, #64748b)'
+                              : 'radial-gradient(circle at 30% 30%, #38bdf8, #0369a1)',
+                      }}
+                    />
+                    <span className="text-xs font-bold text-slate-200">{meta.distanceTag}</span>
+                  </div>
+                  {isSelected && (
+                    <span className="bg-cyan-400 text-slate-950 px-2 py-0.5 text-[10px] font-black uppercase">
+                      SELECTED
+                    </span>
+                  )}
                 </div>
 
-                <h3 className="mt-1.5 font-display text-sm font-bold text-white line-clamp-1">{obj.title}</h3>
-                <p className="mt-1 text-xs text-cyan-100/90 leading-snug line-clamp-2">
-                  {obj.scientificNeed}
-                </p>
-                <div className="mt-2 text-[10px] font-mono-tab text-slate-400 bg-slate-950/60 p-2 border border-slate-800/80">
-                  {obj.gmatScenarioDesc}
-                </div>
+                <h3 className="mt-2.5 font-display text-lg font-extrabold text-white">{meta.shortTitle}</h3>
+                <p className="mt-1 text-xs leading-relaxed text-slate-200">{meta.funGoal}</p>
               </div>
 
-              <div className="mt-3.5 pt-2.5 border-t border-slate-800/90 grid grid-cols-3 gap-2 font-mono-tab text-[10px] text-slate-300">
-                <div>
-                  <span className="text-slate-500">Alt / Ap:</span>{' '}
-                  <strong className="text-white">
-                    {obj.apoapsisKm ? `${obj.apoapsisKm} km` : `${obj.targetAltitudeKm} km`}
-                  </strong>
-                </div>
-                <div>
-                  <span className="text-slate-500">Inc (i):</span>{' '}
-                  <strong className="text-white">{obj.targetInclinationDeg}°</strong>
-                </div>
-                <div>
-                  <span className="text-slate-500">Max Payload:</span>{' '}
-                  <strong className="text-white">{obj.maxPayloadMassKg} kg</strong>
-                </div>
+              <div className="mt-4 pt-2.5 border-t border-white/10 flex items-center justify-between text-[11px] font-semibold text-slate-200">
+                <span className="flex items-center gap-1">
+                  <Globe className="h-3.5 w-3.5 text-cyan-300" />
+                  {bodyData.name}
+                </span>
+                <span className="text-amber-300">Reward: 3★ Discovery Gallery</span>
               </div>
             </button>
           );
         })}
       </div>
 
-      {/* International Payload Suite Selector (NASA & CSA Instruments) */}
-      <div className="border border-slate-800 bg-[#080d19] p-4 space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <Cpu className="h-4 w-4 text-cyan-400" />
-            <h3 className="font-display text-sm font-bold uppercase tracking-wider text-white">
-              International Payload Suite (NASA &amp; Canadian Space Agency)
+      {/* Fun Gadget Loadout */}
+      <div className="border border-slate-800 bg-[#080d19] p-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 className="font-display text-base font-extrabold text-white">
+              Snap On Your Space Gadgets
             </h3>
+            <p className="text-xs text-slate-400">
+              Click gadgets ON or OFF! Keep total weight inside the green zone so your rocket can lift off.
+            </p>
           </div>
-          <div className="flex items-center gap-3 font-mono-tab text-xs">
-            <span className={isOverMass ? 'text-rose-400 font-bold' : 'text-cyan-300'}>
-              Bus + Payload: {totalPayloadMassKg} / {selectedObjective.maxPayloadMassKg} kg
-            </span>
-            <span className="text-slate-600">·</span>
-            <span className="text-amber-300">Total Draw: {totalPowerW} W</span>
+
+          <div className="flex items-center gap-3 bg-slate-900/80 border border-slate-800 px-3.5 py-2">
+            <Scale className={`h-4 w-4 ${isOverMass ? 'text-rose-400' : 'text-emerald-400'}`} />
+            <div className="w-36">
+              <div className="flex justify-between text-[11px] font-bold">
+                <span className="text-slate-300">Craft Weight</span>
+                <span className={isOverMass ? 'text-rose-400' : 'text-emerald-400'}>
+                  {isOverMass ? 'TOO HEAVY!' : 'GOOD FIT ✓'}
+                </span>
+              </div>
+              <div className="h-2 bg-slate-800 overflow-hidden mt-1">
+                <div
+                  className={`h-full transition-all ${
+                    isOverMass ? 'bg-rose-500' : massPct > 80 ? 'bg-amber-400' : 'bg-emerald-400'
+                  }`}
+                  style={{ width: `${massPct}%` }}
+                />
+              </div>
+            </div>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-          {instruments.map((inst) => (
-            <button
-              key={inst.id}
-              type="button"
-              onClick={() => onToggleInstrument(inst.id)}
-              className={`border p-3 text-left transition-all cursor-pointer flex flex-col justify-between ${
-                inst.enabled
-                  ? 'border-cyan-400/70 bg-cyan-950/25'
-                  : 'border-slate-800 bg-slate-900/40 opacity-75 hover:opacity-100'
-              }`}
-            >
-              <div>
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-mono-tab text-[10px] font-bold text-cyan-300">
-                    {inst.acronym} · {inst.agencyPartner}
-                  </span>
-                  <span
-                    className={`font-mono-tab text-[10px] font-bold px-1.5 py-0.5 ${
-                      inst.enabled ? 'bg-emerald-500/20 text-emerald-300' : 'bg-slate-800 text-slate-400'
-                    }`}
-                  >
-                    {inst.enabled ? 'EQUIPPED' : 'STANDBY'}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {instruments.map((inst) => {
+            const friendly = FRIENDLY_GADGET_COPY[inst.id] || {
+              nick: inst.name,
+              funLine: inst.description,
+            };
+            return (
+              <button
+                key={inst.id}
+                type="button"
+                onClick={() => onToggleInstrument(inst.id)}
+                className={`border p-3.5 text-left transition-all cursor-pointer flex flex-col justify-between ${
+                  inst.enabled
+                    ? 'border-emerald-400/80 bg-emerald-950/25'
+                    : 'border-slate-800 bg-slate-900/50 opacity-70 hover:opacity-100'
+                }`}
+              >
+                <div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-bold text-cyan-300">{inst.agencyPartner}</span>
+                    <span
+                      className={`px-2 py-0.5 text-[10px] font-black uppercase ${
+                        inst.enabled ? 'bg-emerald-400 text-slate-950' : 'bg-slate-800 text-slate-400'
+                      }`}
+                    >
+                      {inst.enabled ? 'ON ✓' : 'OFF'}
+                    </span>
+                  </div>
+                  <h4 className="mt-1 font-display text-sm font-bold text-white">{friendly.nick}</h4>
+                  <p className="mt-1 text-xs text-slate-300">{friendly.funLine}</p>
+                </div>
+
+                <div className="mt-3 pt-2 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-300">
+                  <span>Weight: {inst.massKg < 100 ? 'Light' : inst.massKg < 150 ? 'Medium' : 'Heavy'}</span>
+                  <span className="flex items-center gap-1 text-amber-300">
+                    <BatteryCharging className="h-3.5 w-3.5" />
+                    {inst.powerDrawW < 100 ? 'Low Power' : 'High Power'}
                   </span>
                 </div>
-                <h4 className="mt-1 font-display text-xs font-bold text-white">{inst.name}</h4>
-                <p className="mt-1 text-[11px] text-slate-300 leading-snug">{inst.description}</p>
-                {inst.csaHeritage && (
-                  <div className="mt-1.5 text-[10px] font-mono-tab text-amber-300/90">
-                    Heritage: {inst.csaHeritage}
-                  </div>
-                )}
-              </div>
-
-              <div className="mt-2.5 pt-2 border-t border-slate-800/80 flex items-center justify-between font-mono-tab text-[10px] text-slate-400">
-                <span>Mass: <strong className="text-slate-200">{inst.massKg} kg</strong></span>
-                <span>Power: <strong className="text-amber-300">{inst.powerDrawW} W</strong></span>
-                <span>Data: <strong className="text-cyan-300">{inst.dataRateMbps} Mbps</strong></span>
-              </div>
-            </button>
-          ))}
+              </button>
+            );
+          })}
         </div>
       </div>
 
-      {/* Propulsion Architecture & Propellant Budget Selector */}
-      <div className="border border-slate-800 bg-[#080d19] p-4 space-y-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Zap className="h-4 w-4 text-cyan-400" />
-            <h3 className="font-display text-sm font-bold uppercase tracking-wider text-white">
-              Spacecraft Propulsion Architecture &amp; Propellant Sizing
-            </h3>
-          </div>
-          <span className="font-mono-tab text-[11px] text-slate-400">
-            Regime: {selectedObjective.regime.toUpperCase()}
-          </span>
-        </div>
+      {/* Engine Choice + Fuel Tank Slider */}
+      <div className="border border-slate-800 bg-[#080d19] p-5 space-y-4">
+        <h3 className="font-display text-base font-extrabold text-white">
+          Pick Your Space Engine &amp; Fuel Tank Size
+        </h3>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* Chemical Propulsion Card */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
           <button
             type="button"
             onClick={() => onSelectPropulsion('chemical')}
-            className={`border p-3.5 text-left transition-all cursor-pointer ${
+            className={`border p-4 text-left transition-all cursor-pointer ${
               selectedPropulsion === 'chemical'
-                ? 'border-amber-400 bg-amber-950/25 ring-1 ring-amber-500/40'
+                ? 'border-amber-400 bg-amber-950/30 ring-1 ring-amber-400/50'
                 : 'border-slate-800 bg-slate-900/50 hover:border-slate-700'
             }`}
           >
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <Flame className="h-4 w-4 text-amber-400" />
-                <h4 className="font-display text-sm font-bold text-white">
-                  Chemical Bipropellant (MMH / NTO)
-                </h4>
+                <Flame className="h-5 w-5 text-amber-400" />
+                <span className="font-display text-base font-bold text-white">Turbo Rocket Blaster</span>
               </div>
-              <span className="font-mono-tab text-[10px] px-1.5 py-0.5 bg-amber-500/20 text-amber-300 border border-amber-500/40">
-                HIGH THRUST
-              </span>
+              <span className="text-[11px] font-bold text-amber-300">SUPER FAST</span>
             </div>
             <p className="mt-1 text-xs text-slate-300">
-              Fast impulsive burns (minutes duration). Ideal for tight launch window injection and rapid Van Allen belt transit.
+              Huge punchy flame burns! Great for quick orbit hops and fast asteroid dodges.
             </p>
-            <div className="mt-3 pt-2 border-t border-slate-800/80 grid grid-cols-3 gap-2 font-mono-tab text-[10px] text-slate-400">
-              <div>Isp: <strong className="text-white">325 s</strong></div>
-              <div>Thrust: <strong className="text-white">450 N</strong></div>
-              <div>Burn Style: <strong className="text-amber-300">Impulsive</strong></div>
-            </div>
           </button>
 
-          {/* Solar Electric Propulsion Card */}
           <button
             type="button"
             onClick={() => onSelectPropulsion('electric')}
-            className={`border p-3.5 text-left transition-all cursor-pointer ${
+            className={`border p-4 text-left transition-all cursor-pointer ${
               selectedPropulsion === 'electric'
-                ? 'border-cyan-400 bg-cyan-950/25 ring-1 ring-cyan-500/40'
+                ? 'border-cyan-400 bg-cyan-950/30 ring-1 ring-cyan-400/50'
                 : 'border-slate-800 bg-slate-900/50 hover:border-slate-700'
             }`}
           >
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <Zap className="h-4 w-4 text-cyan-400" />
-                <h4 className="font-display text-sm font-bold text-white">
-                  Solar Electric Propulsion (NEXT Hall Ion)
-                </h4>
+                <Zap className="h-5 w-5 text-cyan-400" />
+                <span className="font-display text-base font-bold text-white">Blue Ion Thruster</span>
               </div>
-              <span className="font-mono-tab text-[10px] px-1.5 py-0.5 bg-cyan-500/20 text-cyan-300 border border-cyan-500/40">
-                HIGH EFFICIENCY
-              </span>
+              <span className="text-[11px] font-bold text-cyan-300">FUEL SAVER</span>
             </div>
             <p className="mt-1 text-xs text-slate-300">
-              Continuous low-thrust ion beams. Specific impulse of 3,100s cuts propellant mass by ~70%, leaving extra mass for sensors.
+              Glowing blue ion beam sips tiny amounts of fuel—awesome for faraway Moon &amp; Mars trips!
             </p>
-            <div className="mt-3 pt-2 border-t border-slate-800/80 grid grid-cols-3 gap-2 font-mono-tab text-[10px] text-slate-400">
-              <div>Isp: <strong className="text-white">3,100 s</strong></div>
-              <div>Thrust: <strong className="text-white">0.25 N</strong></div>
-              <div>Burn Style: <strong className="text-cyan-300">Continuous Spiral</strong></div>
-            </div>
           </button>
         </div>
 
-        {/* Propellant Loading Slider */}
-        <div className="border border-slate-800 bg-slate-900/60 p-3 space-y-2">
-          <div className="flex justify-between text-xs">
-            <span className="text-slate-300">Onboard Propellant Loading Budget</span>
-            <span className="font-mono-tab font-bold text-cyan-300">
-              {propellantBudgetKg} kg (Recommended baseline: {selectedObjective.propellantBudgetKg} kg)
-            </span>
+        <div className="border border-slate-800 bg-slate-900/60 p-3.5 space-y-2">
+          <div className="flex justify-between text-xs font-bold">
+            <span className="text-slate-200">Boost Fuel Tank Size</span>
+            <span className="text-cyan-300">{fuelPct}% Tank Capacity</span>
           </div>
           <input
             type="range"
@@ -388,100 +434,25 @@ export function MissionSetupSegment({
             step={50}
             value={propellantBudgetKg}
             onChange={(e) => onChangePropellantBudget(parseInt(e.target.value, 10))}
-            aria-label="Onboard Propellant Loading Budget"
-            className="w-full accent-cyan-400 h-1.5 bg-slate-800 rounded cursor-pointer"
+            aria-label="Boost Fuel Tank Size"
+            className="w-full accent-cyan-400 h-2 bg-slate-800 cursor-pointer"
           />
-          <div className="flex justify-between text-[10px] text-slate-500 font-mono-tab">
-            <span>150 kg (Smallsat budget)</span>
-            <span>Target: {selectedObjective.propellantBudgetKg} kg</span>
-            <span>2,500 kg (Deep space reserve)</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Official NASA Systems Engineering & GMAT Requirements Matrix */}
-      <div className="border border-slate-800 bg-[#080d19] p-4 space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <Database className="h-4 w-4 text-cyan-400" />
-            <h3 className="font-display text-sm font-bold uppercase tracking-wider text-white">
-              GMAT Orbital Elements &amp; Level-1 Constraints ({selectedObjective.title})
-            </h3>
-          </div>
-          <span className="font-mono-tab text-[11px] text-slate-400">
-            Ref: {selectedObjective.nasaProgramRef}
-          </span>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
-          <div className="border border-slate-800 bg-slate-900/50 p-3 space-y-1">
-            <div className="flex items-center gap-1.5 font-mono-tab text-[11px] text-cyan-300">
-              <Compass className="h-3.5 w-3.5" />
-              Target Orbit Profile
-            </div>
-            <div className="text-slate-300">
-              Alt: <strong className="text-white">{selectedObjective.targetAltitudeKm} km</strong>
-            </div>
-            <div className="text-slate-300">
-              Inc: <strong className="text-white">{selectedObjective.targetInclinationDeg}°</strong>
-            </div>
-            <div className="text-slate-400 text-[10px]">
-              Ecc: {selectedObjective.targetEccentricity ?? 0.0} · RAAN: {selectedObjective.raanDeg ?? 0}°
-            </div>
-          </div>
-
-          <div className="border border-slate-800 bg-slate-900/50 p-3 space-y-1">
-            <div className="flex items-center gap-1.5 font-mono-tab text-[11px] text-cyan-300">
-              <Scale className="h-3.5 w-3.5" />
-              Payload &amp; Propulsion
-            </div>
-            <div className="text-slate-300">
-              Max Payload: <strong className="text-white">{selectedObjective.maxPayloadMassKg} kg</strong>
-            </div>
-            <div className="text-slate-300">
-              Fuel Budget: <strong className="text-white">{propellantBudgetKg} kg</strong>
-            </div>
-            <div className="text-slate-400 text-[10px]">
-              Engine: {selectedPropulsion === 'chemical' ? 'Chemical Biprop' : 'Solar Electric Ion'}
-            </div>
-          </div>
-
-          <div className="border border-slate-800 bg-slate-900/50 p-3 space-y-1">
-            <div className="flex items-center gap-1.5 font-mono-tab text-[11px] text-amber-300">
-              <DollarSign className="h-3.5 w-3.5" />
-              Budget &amp; Program Cap
-            </div>
-            <div className="text-slate-300">
-              Cost Cap: <strong className="text-amber-300">${selectedObjective.budgetCapM}M</strong>
-            </div>
-            <div className="text-slate-400 text-[10px] line-clamp-2">
-              Includes launcher procurement and Phase A–D development reserves.
-            </div>
-          </div>
-
-          <div className="border border-slate-800 bg-slate-900/50 p-3 space-y-1">
-            <div className="flex items-center gap-1.5 font-mono-tab text-[11px] text-emerald-300">
-              <Globe className="h-3.5 w-3.5" />
-              Primary Science Goal
-            </div>
-            <div className="text-slate-300 font-medium line-clamp-2">
-              {selectedObjective.primaryScienceDeliverable}
-            </div>
-            <div className="text-slate-400 text-[10px]">
-              Target Data: &ge; {selectedObjective.minScienceDataGB} GB
-            </div>
+          <div className="flex justify-between text-[11px] text-slate-400">
+            <span>Light Hopper</span>
+            <span>Balanced</span>
+            <span>Mega Tank</span>
           </div>
         </div>
 
-        {/* Mission Briefing Callout: NASA + GMAT + CSA Partnership (clean full border, no thick left stripe) */}
-        <div className="border border-cyan-500/30 bg-cyan-950/15 p-3.5 text-xs space-y-1.5">
-          <div className="flex items-center gap-1.5 font-bold text-cyan-300">
-            <Info className="h-3.5 w-3.5" />
-            Mission Briefing: NASA Systems Engineering &amp; CSA Partnership
-          </div>
-          <p className="text-[11px] text-slate-300 leading-relaxed">
-            {selectedObjective.csaCollaborationNote} In GMAT, astrodynamicists define the initial Keplerian state vector (a, e, i, Ω, ω, ν), dry mass, and propulsion hardware before running Prince-Dormand numerical propagators.
-          </p>
+        <div className="flex justify-end pt-1">
+          <button
+            type="button"
+            onClick={onProceedToLaunch}
+            className="flex items-center gap-2 bg-cyan-500 px-6 py-3 text-sm font-black text-slate-950 hover:bg-cyan-400 transition-colors cursor-pointer"
+          >
+            <Rocket className="h-4 w-4" />
+            <span>Ready! Head to Launchpad →</span>
+          </button>
         </div>
       </div>
     </div>

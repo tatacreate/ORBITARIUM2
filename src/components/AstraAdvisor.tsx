@@ -26,6 +26,7 @@ import type {
   SurfaceLandmark,
   SystemVerificationScorecard,
 } from '../types/nasaSegments';
+import type { UnifiedGameSnapshot } from '../game/UnifiedMissionCanvas';
 import {
   CartoonAstronautFace,
   DEFAULT_ASTRONAUT_APPEARANCE,
@@ -75,6 +76,7 @@ interface AstraAdvisorProps {
   classicConfig: MissionConfig;
   classicTelemetry: TelemetryReport;
   activeAnomalyTitle?: string | null;
+  unifiedSnapshot?: UnifiedGameSnapshot | null;
   onOpenDictionary: () => void;
 }
 
@@ -105,6 +107,7 @@ function buildNpcScript(props: AstraAdvisorProps): NpcDialogueScript {
     classicConfig,
     classicTelemetry,
     activeAnomalyTitle,
+    unifiedSnapshot,
   } = props;
 
   // 1. HOMEPAGE SCRIPT
@@ -114,14 +117,99 @@ function buildNpcScript(props: AstraAdvisorProps): NpcDialogueScript {
       stateLabel: 'On Deck',
       headline: 'Crew Chief A.S.T.R.A. Reporting!',
       tips: [
-        'Hey Cadet! I am A.S.T.R.A., your mission crewmate. Click "Launch Mission Architect" to pilot a real 4-segment space mission from liftoff to science downlink!',
+        'Hey Cadet! I am A.S.T.R.A., your mission crewmate. Click "Launch Mission Architect" to fly a continuous mission from liftoff to planet discovery!',
         'Want to team up with friends? Pick "Team Room (1–4)" to assemble a spacecraft together in Co-Op or Competitive mode.',
         'Psst—click the Suit icon at the top of my radio card anytime to customize my spacesuit, hair, visor tint, and mission patch!',
       ],
     };
   }
 
-  // 2. NASA 4-SEGMENT MISSION ARCHITECT SCRIPTS
+  // 2. UNIFIED CONTINUOUS MISSION SCRIPT
+  if (appView === 'nasa-architect' && unifiedSnapshot) {
+    if (unifiedSnapshot.phase === 'briefing') {
+      return {
+        mood: 'excited',
+        stateLabel: 'Briefing',
+        headline: 'Pick One Connected Mission!',
+        tips: [
+          'Every drop of fuel you save in Launch stays in your tank in Orbit, and every Data Orb you collect gets beamed down at the end!',
+          'Try Earth Climate Guard for hurricanes, Lunar Gateway Rescue for Canadarm3 grappling, or Mars Water Hunter for Solar Shielding!',
+        ],
+      };
+    }
+    if (unifiedSnapshot.phase === 'launch' || unifiedSnapshot.phase === 'transition_orbit') {
+      return {
+        mood: 'warning',
+        stateLabel: 'Ascent',
+        headline: 'Ride the Arc & Cut Inside Green Ring!',
+        tips: [
+          'Use A / D (or drag across the sky) to fly through Gold Rings for +7% bonus fuel!',
+          'Press SPACE (or tap CUT ENGINE) when you reach the green Target Orbit Ring at the top—then watch the camera pull back into orbit!',
+        ],
+      };
+    }
+    if (unifiedSnapshot.phase === 'orbit') {
+      if (unifiedSnapshot.activeThreat === 'debris') {
+        return {
+          mood: 'alert',
+          stateLabel: 'Debris!',
+          headline: 'Dodge the Red Trajectory Line!',
+          tips: [
+            'Use W/S (Up/Down) or A/D (Left/Right) to slip cleanly out of the red dotted meteor lane!',
+          ],
+        };
+      }
+      if (unifiedSnapshot.activeThreat === 'solar-wave') {
+        return {
+          mood: 'alert',
+          stateLabel: 'Solar Wave!',
+          headline: 'Hold [SHIFT] or [E] for Solar Shield!',
+          tips: [
+            'A golden solar storm wave is sweeping across space! Hold SHIFT or E (or the SHIELD button) to deflect it cleanly with zero hull damage!',
+          ],
+        };
+      }
+      if (unifiedSnapshot.missionId === 'lunar-rescue') {
+        return {
+          mood: 'nominal',
+          stateLabel: 'Canadarm',
+          headline: 'Reel In the Gateway Pod!',
+          tips: [
+            'Use Left/Right to catch up or slow down, Up/Down to match height, then hold SPACE inside the dashed ring to extend Canadarm3!',
+          ],
+        };
+      }
+      return {
+        mood: 'nominal',
+        stateLabel: 'Orbit Ops',
+        headline: `Collect ${unifiedSnapshot.orbGoal} Glowing Orbs!`,
+        tips: [
+          `Fly over pulsing surface landmarks (${unifiedSnapshot.orbsCollected}/${unifiedSnapshot.orbGoal} collected) and hold SPACE to fill the scan ring!`,
+          'Tip: Hold A / Left Arrow anytime to brake or hover cleanly over a target!',
+        ],
+      };
+    }
+    if (unifiedSnapshot.phase === 'beamdown') {
+      return {
+        mood: 'excited',
+        stateLabel: 'Beam-Down',
+        headline: `Aim for the Emerald Dish Cone!`,
+        tips: [
+          `Steer your ship into the glowing ground dish cone and hold SPACE to beam down your ${unifiedSnapshot.orbGoal} collected orbs (${unifiedSnapshot.orbsBeamed}/${unifiedSnapshot.orbGoal} sent)!`,
+        ],
+      };
+    }
+    return {
+      mood: 'excited',
+      stateLabel: `${unifiedSnapshot.starsEarned} Stars!`,
+      headline: 'Mission Accomplished!',
+      tips: [
+        'Awesome flying! Check your unlocked Discovery Cards and Fuel Bonus—then hit Play Next Mission!',
+      ],
+    };
+  }
+
+  // 2B. FALLBACK NASA 4-SEGMENT ARCADE MISSION SCRIPTS
   if (appView === 'nasa-architect') {
     const activeInstruments = nasaInstruments.filter((i) => i.enabled);
     const totalWetMassKg =
@@ -131,34 +219,34 @@ function buildNpcScript(props: AstraAdvisorProps): NpcDialogueScript {
       if (totalWetMassKg > selectedObjective.maxPayloadMassKg) {
         return {
           mood: 'warning',
-          stateLabel: 'Mass Alert',
-          headline: 'Spacecraft Too Heavy for Envelope',
+          stateLabel: 'Too Heavy',
+          headline: 'Lighten Up Before Liftoff!',
           tips: [
-            `Hold up! Our wet mass is ${totalWetMassKg} kg, above the ${selectedObjective.maxPayloadMassKg} kg target cap. Toggle off an optional sensor or trim propellant a bit.`,
+            'Whoa—your spacecraft stack is a bit too heavy! Turn off one optional gadget or lower the Fuel Tank slider until the bar shows GOOD FIT!',
             selectedPropulsion === 'chemical'
-              ? 'Tip: Switching to Solar Electric Ion propulsion cuts required fuel mass dramatically for deep-space trajectories.'
-              : 'Tip: You can also pick Sandbox Lab at the top if you want to experiment freely without strict mass penalties!',
+              ? 'Pro tip: Blue Ion Thrusters are super light and stretch your fuel miles farther!'
+              : 'You can also switch to Free Play Sandbox at the top to try any gadget combo with zero limits!',
           ],
         };
       }
 
       const regimeHint: Record<NasaObjectiveSpec['regime'], string> = {
-        leo: 'For Low Earth Orbit climate monitoring, equip RADARSAT-SAR and aim for a high-inclination polar pass so Inuvik catches every orbit!',
-        geo: 'Geostationary satellites park 35,786 km above the equator—that takes high Delta-v and clean Ka-band pointing.',
-        heo: 'Highly Elliptical (Molniya) orbits hang high over northern skies at 63.4° inclination where Earth’s equator bulge cancels drift.',
-        lunar: 'Headed to Lunar Gateway! Equip Canadarm3 and high-sensitivity sensors to inspect Shackleton Crater ice shadows.',
-        lagrange: 'Sun-Earth L2 is 1.5 million km behind Earth—keep telescope instruments powered and watch your downlink link budget!',
-        interplanetary: 'Mars transfer needs lots of Delta-v! Compare Chemical speed vs. Ion efficiency before you head to the launch pad.',
+        leo: 'Arctic Earth Patrol! Pack the Cloud-Piercing Radar so you can peek straight through thick snowstorms!',
+        geo: 'Park high above Earth as a weather watcher—grab the Super Planet Camera and Rainbow Scanner!',
+        heo: 'Loop high over the North Pole to catch dancing Northern Lights with the Aurora Detector!',
+        lunar: 'Moon South Pole Hunt! Pack the Canadarm3 Robot Claw and Radar to hunt hidden crater ice!',
+        lagrange: 'Deep-Space Telescope! Switch on your Rainbow Scanner to peek at glowing newborn stars!',
+        interplanetary: 'Red Planet Explorer! Blue Ion Thrusters are awesome for the long flight out to Mars!',
       };
 
       return {
         mood: 'nominal',
-        stateLabel: architectMode === 'sandbox' ? 'Sandbox' : 'Briefing',
-        headline: `Mission Brief: ${selectedObjective.regime.toUpperCase()}`,
+        stateLabel: architectMode === 'sandbox' ? 'Free Play' : 'Ready!',
+        headline: `Next Stop: ${selectedObjective.targetBody.toUpperCase()}!`,
         tips: [
           regimeHint[selectedObjective.regime],
-          `We have ${activeInstruments.length} instruments powered (${totalWetMassKg} kg total mass). When your manifest looks sharp, hit Segment 1: Launch!`,
-          'You can customize my suit or drag my radio card anywhere on your screen if you need room to read telemetry.',
+          `You have ${activeInstruments.length} cool gadgets packed and ready. Hit "1. Blast Off!" when you are set!`,
+          'You can drag my radio card anywhere or click the palette icon to customize my spacesuit!',
         ],
       };
     }
@@ -167,54 +255,54 @@ function buildNpcScript(props: AstraAdvisorProps): NpcDialogueScript {
       if (totalWetMassKg > selectedRocket.maxPayloadKg) {
         return {
           mood: 'alert',
-          stateLabel: 'Overload',
-          headline: `${selectedRocket.name} Overload!`,
+          stateLabel: 'Heavy Rocket',
+          headline: `Need a Bigger Rocket!`,
           tips: [
-            `Whoa—our ${totalWetMassKg} kg stack is heavier than ${selectedRocket.name}'s ${selectedRocket.maxPayloadKg} kg lift limit! Pick a bigger rocket on the left panel before ignition.`,
-            'Or head back to Mission Setup and trim propellant or heavy instruments.',
+            `Your craft is too chunky for ${selectedRocket.name}! Click a bigger rocket card on the left so we can blast off cleanly.`,
+            'Or pop back to Setup and turn off a heavy gadget.',
           ],
         };
       }
       if (burnState.status === 'failed') {
         return {
           mood: 'alert',
-          stateLabel: 'Abort',
-          headline: 'Ascent Missed Orbit — Reset Pad!',
+          stateLabel: 'Try Again',
+          headline: 'Oops—Reset the Launchpad!',
           tips: [
-            'Tough break, Flight Director! Hit "Reset Launch Pad" and watch two things: throttle back to ~65% during Max-Q (15–25 km), then press SPACE right inside the green SECO target velocity band.',
-            'Need steadier steering? Turn on Cadet SAS Pitch Assist so you can focus purely on throttle and SECO cutoff timing!',
+            'Hit "Reset Pad" and ride the glowing green sky tunnel up! Use A/D (or drag on the sky) to dodge red storm clouds and snag gold fuel rings.',
+            'Once you reach the green Target Orbit bar at the top, smash DEPLOY SATELLITE!',
           ],
         };
       }
       if (burnState.status === 'burning') {
         return {
           mood: 'warning',
-          stateLabel: 'In Flight',
-          headline: 'Keep Eyes on Max-Q & Velocity Gate!',
+          stateLabel: 'Blasting Off',
+          headline: 'Stay Inside the Green Tunnel!',
           tips: [
-            'Use W/S to throttle down slightly through Max-Q turbulence, and A/D to follow the dashed gravity-turn curve!',
-            'Watch the Velocity progress bar—hit SPACE for Engine Cutoff (SECO) the moment it enters the green target zone!',
+            'Hold SPACE (or HOLD TO BOOST) to roar upward! Steer Left/Right with A/D to scoop up glowing Gold Fuel Rings!',
+            'Dodge those grumpy red storm clouds so your rocket stays steady!',
           ],
         };
       }
       if (burnState.status === 'completed' && burnState.outcomeType === 'nominal') {
         return {
           mood: 'excited',
-          stateLabel: 'Orbit Lock',
-          headline: 'Clean SECO! Ready for Space Ops',
+          stateLabel: 'In Space!',
+          headline: 'Woohoo! Clean Orbit Drop!',
           tips: [
-            `Awesome piloting! We hit ${burnState.deliveredDeltaVKms} km/s with ${burnState.launchEfficiencyScore ?? 92}% efficiency. Click "Segment 2: Space" to take command in orbit!`,
-            'Want to try a tighter manual gravity turn? You can always reset the pad and fly ascent again with SAS Assist switched off.',
+            'Awesome flying, Commander! Hit "2. Fly in Space!" to slingshot around the planet and snap discoveries!',
+            'Want to beat your Gold Ring score? Hit Reset Pad anytime for another arcade run!',
           ],
         };
       }
       return {
         mood: 'nominal',
-        stateLabel: 'Pad Ready',
-        headline: 'T-Zero Launch Checklist',
+        stateLabel: 'Launchpad',
+        headline: 'Ready for Arcade Liftoff!',
         tips: [
-          'Press IGNITE ENGINES (or SPACE) when ready! Once airborne, steer pitch right (D) along the dashed curve and ease throttle (S) if Max-Q pressure turns amber.',
-          'For Lunar or Mars missions, slide the Departure Day Offset in Launch Window Analysis to find the lowest Delta-v day!',
+          'Pick a rocket on the left, then hold SPACE or press HOLD TO BOOST to blast into the sky!',
+          'Steer through the glowing green tunnel, grab Gold Fuel Rings, and hit the green Orbit Zone at the top!',
         ],
       };
     }
@@ -225,43 +313,29 @@ function buildNpcScript(props: AstraAdvisorProps): NpcDialogueScript {
         if (hz.type === 'debris') {
           return {
             mood: 'alert',
-            stateLabel: 'Debris Alert',
-            headline: `Incoming Debris! T-${Math.max(0, hz.timeRemainingSec).toFixed(1)}s`,
+            stateLabel: 'Junk Alert!',
+            headline: `Dodge That Space Junk! (${Math.max(0, hz.timeRemainingSec).toFixed(0)}s)`,
             tips: [
-              'Brace! Click "Fire 32 m/s Dodge Burn" on the red alert bar—or execute a ≥ 25 m/s maneuver burn—before the timer hits zero!',
-              'Surviving debris conjunctions protects hull integrity and unlocks the CSA Canadarm3 Discovery Card.',
+              'Watch out! Smash DODGE UP or DODGE DOWN on the red alert banner—or fire a quick thruster burn—before time runs out!',
             ],
           };
         }
         if (hz.type === 'solar-flare') {
           return {
             mood: 'alert',
-            stateLabel: 'Solar Storm',
-            headline: `CME Radiation Surge! T-${Math.max(0, hz.timeRemainingSec).toFixed(1)}s`,
+            stateLabel: 'Solar Flare!',
+            headline: `Flip the Heat Shield! (${Math.max(0, hz.timeRemainingSec).toFixed(0)}s)`,
             tips: [
-              `Quick! Slew our Radiation Shield to match Sun Vector (${Math.round(opsState.sunAngleDeg)}°) AND click "Shed Payloads" so ≤ 2 instruments stay powered!`,
-              'Both actions together shield our optics until the solar storm passes.',
+              'Sun storm incoming! Smash FLIP HEAT SHIELD on the alert bar and switch off an extra gadget in Gadgets & Solar!',
             ],
           };
         }
         return {
           mood: 'warning',
-          stateLabel: 'Low Bus',
-          headline: `Umbra Power Sag! T-${Math.max(0, hz.timeRemainingSec).toFixed(1)}s`,
-          tips: [
-            'Battery is dipping in planetary shadow! Hit "Shed Power Load" or align Solar Panels with the Sun Vector as soon as we exit eclipse.',
-            'Watch the live bus bar below the orbit view—turn instruments back on once power margin goes positive.',
-          ],
-        };
-      }
-
-      if (opsState.batteryPct < 35) {
-        return {
-          mood: 'warning',
           stateLabel: 'Low Battery',
-          headline: 'Battery Below 35%!',
+          headline: `Save Battery Power! (${Math.max(0, hz.timeRemainingSec).toFixed(0)}s)`,
           tips: [
-            `Solar panels are misaligned or payload draw is high. In Maneuvers, align Solar Wing Angle near ${Math.round(opsState.sunAngleDeg)}° or switch off an instrument in Targeting!`,
+            'We are cruising through planet shadow! Switch off extra gadgets in the Gadgets & Solar tab until power turns green.',
           ],
         };
       }
@@ -270,12 +344,12 @@ function buildNpcScript(props: AstraAdvisorProps): NpcDialogueScript {
       if (opsState.canadarm.completedCount === 0) {
         return {
           mood: 'nominal',
-          stateLabel: 'Orbital Ops',
-          headline: 'Maneuvers, Canadarm3 & Scanning',
+          stateLabel: 'Space Ops',
+          headline: 'Slingshot, Snap & Robot Claw!',
           tips: [
-            'Click anywhere on the cyan orbit ring to place a Maneuver Node, drag the amber handle, Warp to Burn Window, and fire IN WINDOW!',
-            'Try the Canadarm3 tab: use Q/E, W/S, and A/D to steer the robotic grapple over the drifting amber target ring, then press SPACE to lock it!',
-            `Over in the Targeting tab, ${capturedCount}/${landmarks.length} surface landmarks are scanned. Power on each target’s sensor and hit FIRE SCAN!`,
+            'Drag the glowing Amber Arrow right on the space screen to preview a new orbit—then hit FIRE THRUSTERS!',
+            'When your green scanner beam hits a pulsing circle on the planet, smash SNAP PHOTO! to unlock an illustrated discovery!',
+            'Don’t miss the Canadarm Claw tab—steer the robot arm over the floating pod and click GRAB POD!',
           ],
         };
       }
@@ -283,22 +357,21 @@ function buildNpcScript(props: AstraAdvisorProps): NpcDialogueScript {
       if (capturedCount < 3) {
         return {
           mood: 'excited',
-          stateLabel: 'Science Ops',
-          headline: `Great Robotics! ${capturedCount}/${landmarks.length} Targets Scanned`,
+          stateLabel: 'Snapping!',
+          headline: `Nice Claw Grab! ${capturedCount}/${landmarks.length} Snapped`,
           tips: [
-            'Open the Targeting tab to slew our cross-track gimbal and pulse-scan planetary landmarks—every scan queues 8.5 GB into our SSR memory!',
-            'When you have captured a few science targets, fly over to Segment 3: Ground Dish to beam them home!',
+            'Keep snapping glowing planet targets whenever your green beam sweeps over them!',
+            'When you have a few photos saved up, head to Step 3: Signal Link to beam them back to Earth!',
           ],
         };
       }
 
       return {
         mood: 'excited',
-        stateLabel: 'Ready Downlink',
-        headline: 'SSR Loaded With Science Data!',
+        stateLabel: 'Full Album',
+        headline: 'Memory Full of Cool Photos!',
         tips: [
-          `Nice work—${capturedCount}/${landmarks.length} landmarks captured and stored in our Solid-State Recorder! Head to Segment 3: Ground to steer the dish and downlink.`,
-          'You can also test your crisis reflexes anytime with "Trigger Space Crisis Drill" at the top right.',
+          `Sweet! You snapped ${capturedCount} planet discoveries! Hop over to "3. Signal Link" to aim the laser dish and beam them home!`,
         ],
       };
     }
@@ -308,72 +381,59 @@ function buildNpcScript(props: AstraAdvisorProps): NpcDialogueScript {
       if (!groundComm.hasLineOfSight) {
         return {
           mood: 'warning',
-          stateLabel: 'Blackout',
-          headline: 'Line-of-Sight Occluded!',
+          stateLabel: 'Blocked',
+          headline: 'Planet Blocking the Laser!',
           tips: [
-            'The planet is blocking our radio beam right now—classic orbital blackout! Check the Station Handover list on the right and click a station with ONLINE LOS!',
-            'For polar Earth missions, CSA Inuvik (68.3° N) catches way more passes than mid-latitude dishes.',
+            'The planet is in the way right now! Look at the station list on the right and click any dish with a green CLEAR SKY badge!',
+            'Arctic Canada Dish catches northern orbits super often!',
           ],
         };
       }
       if (groundComm.dishLockQualityPct < 60) {
         return {
           mood: 'warning',
-          stateLabel: 'Weak Lock',
-          headline: `Carrier Lock Only ${groundComm.dishLockQualityPct}%`,
+          stateLabel: 'Aim Dish',
+          headline: 'Center the Sky Circle!',
           tips: [
-            'Drag or click the dish reticle on the sky dome onto the bright green spacecraft beacon to boost signal lock above 80%!',
-            'Struggling with the fast narrow Ka-Band beam? Switch to X-Band for a wider beam or toggle Servo Auto-Track ON.',
+            'Click or drag anywhere in the sky to point your dish beam onto the cute floating satellite!',
+            'Or hit "Snap Dish to Satellite" or "Wide Beam (Easy)" right below the sky screen!',
           ],
         };
       }
       return {
         mood: 'excited',
-        stateLabel: 'Link Locked',
-        headline: `Strong ${groundComm.dishLockQualityPct}% Dish Lock!`,
+        stateLabel: 'Laser On!',
+        headline: 'Data Streaming Home!',
         tips: [
           pending > 0
-            ? `Keep holding lock or click "Flush SSR Burst" to stream ${pending} captured landmark dataset(s) down to mission science!`
-            : `Telemetry is flowing at ${groundComm.currentDownlinkMbps} Mbps (${Math.round(groundComm.totalDataDownlinkedGB)} GB downlinked). Head to Segment 4: User when ready!`,
-          'Notice how Doppler shift swings from positive to negative as the spacecraft flies overhead—that is how DSN tracks orbital speed!',
+            ? `Boom! Click "Beam ${pending} Photo(s) Home!" to fire a golden packet burst down the laser beam!`
+            : 'Awesome laser link! Click "See My Discoveries!" to open your illustrated gallery and Star Rewards!',
         ],
       };
     }
 
     if (nasaSegment === 'user') {
-      const failedGate = verificationScorecard.items.find((i) => !i.passed);
-      if (verificationScorecard.overallPass) {
-        return {
-          mood: 'excited',
-          stateLabel: 'Certified',
-          headline: `${verificationScorecard.flightCertificationGrade.split(' ')[0]} Verification!`,
-          tips: [
-            `Bravo, ${verificationScorecard.missionRankBadge}! Dynamic Performance Index is ${verificationScorecard.dynamicPerformanceScore}/100. Inspect your reconstructed landmarks on the map!`,
-            'Switch between Composite, RADARSAT SAR, and IR/Methane layers above the map, or open ConOps HUD for the full control view.',
-          ],
-        };
-      }
+      const downlinked = landmarks.filter((l) => l.downlinked).length;
       return {
-        mood: 'warning',
-        stateLabel: 'Review Gate',
-        headline: 'Check Failed SE Requirement!',
+        mood: downlinked >= 2 ? 'excited' : 'nominal',
+        stateLabel: 'Gallery!',
+        headline: `${downlinked}/${landmarks.length} Discoveries Unlocked`,
         tips: [
-          failedGate
-            ? `Almost there! "${failedGate.requirementName}" needs work: ${failedGate.consequence}`
-            : 'Review the 7-gate Systems Engineering Verification Matrix below to see which segment needs adjustment.',
-          'Jump back to Launch, Space, or Ground anytime—your mission updates live without losing progress!',
+          downlinked >= 3
+            ? 'Superstar Commander! Enjoy your illustrated Discovery Cards and Mission Stars—or play a new planet mission anytime!'
+            : 'Want to unlock more cards and reach 3 Gold Stars? Jump back to Space to snap more photos, then Beam them in Step 3!',
         ],
       };
     }
 
-    // conops
+    // conops (3D Planet View)
     return {
-      mood: verificationScorecard.overallPass ? 'excited' : 'nominal',
-      stateLabel: 'Master HUD',
-      headline: 'All Four Segments Synchronized',
+      mood: 'excited',
+      stateLabel: '3D Globe',
+      headline: 'Live 3D Planet Explorer',
       tips: [
-        'Welcome to Master ConOps! From here you can watch 3D orbital propagation alongside live power, SSR buffer, Doppler drift, and verification status.',
-        'Click any of the four top cards (Launch, Space, Ground, User) to jump straight back to that flight console.',
+        'Watch your spacecraft glide around the 3D globe! Try the Craft Cam button at the top right for a close-up!',
+        'Click any of the four colorful mission cards above to jump straight back into action.',
       ],
     };
   }
@@ -589,12 +649,28 @@ export function AstraAdvisor(props: AstraAdvisorProps) {
     });
   };
 
+  // Auto-minimize during active flight in Unified Mission view so the full-screen canvas stays 100% clear
+  const inActivePlay =
+    props.appView === 'nasa-architect' &&
+    props.unifiedSnapshot &&
+    props.unifiedSnapshot.phase !== 'briefing' &&
+    props.unifiedSnapshot.phase !== 'finale';
+
+  useEffect(() => {
+    if (inActivePlay) {
+      setMinimized(true);
+    }
+  }, [inActivePlay]);
+
+  const dockClass =
+    props.appView === 'nasa-architect' ? 'bottom-20 right-4' : 'bottom-4 right-4';
+
   // Minimized floating cartoon astronaut badge
   if (minimized) {
     return (
       <div
         style={{ transform: `translate3d(${offset.x}px, ${offset.y}px, 0)` }}
-        className="pointer-events-auto fixed bottom-4 right-4 z-50 flex items-center gap-2 border border-slate-700 bg-[#080d19] p-1.5 pr-3 shadow-2xl"
+        className={`pointer-events-auto fixed ${dockClass} z-50 flex items-center gap-2 border border-slate-700 bg-[#080d19]/95 p-1.5 pr-3 shadow-2xl`}
       >
         <button
           type="button"
@@ -621,7 +697,7 @@ export function AstraAdvisor(props: AstraAdvisorProps) {
   return (
     <div
       style={{ transform: `translate3d(${offset.x}px, ${offset.y}px, 0)` }}
-      className={`pointer-events-auto fixed bottom-4 right-4 z-50 w-[335px] sm:w-[370px] border ${palette.border} bg-[#080d19] shadow-2xl`}
+      className={`pointer-events-auto fixed ${dockClass} z-50 w-[335px] sm:w-[370px] border ${palette.border} bg-[#080d19] shadow-2xl`}
     >
       {/* Draggable NPC Header Bar */}
       <div

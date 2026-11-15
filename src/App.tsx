@@ -3,14 +3,8 @@ import { onAuthStateChanged, type User } from 'firebase/auth';
 import {
   ArrowLeft,
   BookOpen,
-  Compass,
-  FileCheck2,
-  Layers,
   Orbit,
-  Pause,
-  Play,
-  Radio,
-  Rocket,
+  RotateCcw,
   Volume2,
   VolumeX,
 } from 'lucide-react';
@@ -28,13 +22,8 @@ import { PhaseHeader } from './components/PhaseHeader';
 import { TeamRoomModal } from './components/TeamRoomModal';
 import { TitleScreen } from './components/TitleScreen';
 
-// NASA 4-Segment + ConOps Components
-import { ConOpsSegment } from './components/segments/ConOpsSegment';
-import { GroundSegment } from './components/segments/GroundSegment';
-import { LaunchSegment } from './components/segments/LaunchSegment';
-import { MissionSetupSegment } from './components/segments/MissionSetupSegment';
-import { SpaceSegment } from './components/segments/SpaceSegment';
-import { UserSegment } from './components/segments/UserSegment';
+import { UnifiedMissionCanvas, type UnifiedGameSnapshot } from './game/UnifiedMissionCanvas';
+import { UNIFIED_MISSIONS } from './game/missions';
 
 import { DEFAULT_MISSION_CONFIG, OBJECTIVES } from './data/catalog';
 import {
@@ -269,6 +258,18 @@ export default function App() {
   const [isSimPaused, setIsSimPaused] = useState(false);
   const [simSpeedMult, setSimSpeedMult] = useState<number>(1);
   const [missionElapsedSec, setMissionElapsedSec] = useState<number>(142500);
+  const [unifiedSnapshot, setUnifiedSnapshot] = useState<UnifiedGameSnapshot>({
+    missionId: 'earth-climate',
+    phase: 'briefing',
+    fuelPct: 100,
+    hullPct: 100,
+    orbsCollected: 0,
+    orbsBeamed: 0,
+    orbGoal: 3,
+    activeThreat: 'none',
+    starsEarned: 3,
+  });
+  const [briefingRequest, setBriefingRequest] = useState<{ phase: 'briefing'; nonce: number } | null>(null);
 
   // Modals & UI Controls
   const [muted, setMuted] = useState(false);
@@ -683,9 +684,9 @@ export default function App() {
     };
   }, []);
 
-  // REAL-TIME ORBITAL PROPAGATION, OPS PHYSICS & DOWNLINK LOOP
+  // Legacy orbital interval paused — UnifiedMissionCanvas drives its own 60fps fixed-timestep loop
   useEffect(() => {
-    if (appView !== 'nasa-architect' || isSimPaused) return;
+    if (true || appView !== 'nasa-architect' || isSimPaused) return;
 
     const interval = window.setInterval(() => {
       const snap = simSnapshotRef.current;
@@ -1432,16 +1433,17 @@ export default function App() {
         </div>
       )}
 
-      {/* VIEW 2: NASA / GMAT / CSA 4-SEGMENT MISSION ARCHITECT */}
+      {/* VIEW 2: UNIFIED FULL-SCREEN 60FPS SPACE MISSION GAME */}
       {appView === 'nasa-architect' && (
-        <>
-          <header className="sticky top-0 z-40 border-b border-slate-800 bg-[#070b16]/95 backdrop-blur-md px-4 py-2.5 shadow-2xl">
-            <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex h-screen w-screen flex-col overflow-hidden bg-[#020617]">
+          <header className="z-40 shrink-0 border-b border-slate-800/90 bg-[#060a14]/95 px-4 py-2">
+            <div className="flex items-center justify-between gap-4">
               {/* Left: Back to Homepage + Brand */}
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 shrink-0">
                 <button
                   type="button"
                   onClick={() => {
+                    audioSynth.setThrustRumble(0);
                     audioSynth.playSelect();
                     setAppView('title');
                   }}
@@ -1454,159 +1456,69 @@ export default function App() {
 
                 <div className="flex items-center gap-2">
                   <Orbit className="h-4 w-4 text-cyan-400" />
-                  <h1 className="font-display text-lg font-black tracking-wider text-white">
+                  <span className="font-display text-base font-black tracking-wider text-white">
                     ORBITARIUM
-                  </h1>
-                </div>
-
-                <div className="hidden xl:flex items-center gap-2 border-l border-slate-700/80 pl-3 text-xs text-slate-400">
-                  <span className="font-mono-tab text-[10px] font-bold text-cyan-300">
-                    NASA NPR 7120.5 · GMAT · CSA
                   </span>
-                  <span>·</span>
-                  <button
-                    type="button"
-                    onClick={() => setArchitectMode((m) => (m === 'cadet' ? 'sandbox' : 'cadet'))}
-                    className={`font-mono-tab text-[10px] font-bold px-2 py-0.5 border cursor-pointer ${
-                      architectMode === 'sandbox'
-                        ? 'border-amber-500/50 bg-amber-950/40 text-amber-300'
-                        : 'border-cyan-500/40 bg-cyan-950/40 text-cyan-300'
-                    }`}
-                  >
-                    {architectMode === 'sandbox' ? 'SANDBOX LAB' : 'CADET CHALLENGE'}
-                  </button>
                 </div>
               </div>
 
-              {/* Center Navigation Tabs: The 4 Major Segments + ConOps */}
-              <nav className="flex items-center gap-1 border border-slate-800 bg-slate-900/80 p-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    audioSynth.playSelect();
-                    setCurrentNasaSegment('setup');
-                  }}
-                  className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${
-                    currentNasaSegment === 'setup'
-                      ? 'bg-cyan-500 text-slate-950 font-bold shadow-sm'
-                      : 'text-slate-300 hover:text-white hover:bg-slate-800'
-                  }`}
-                >
-                  <Compass className="h-3.5 w-3.5" />
-                  <span className="hidden md:inline">Mission Setup</span>
-                  <span className="md:hidden">Setup</span>
-                </button>
+              {/* Center: Connected 4-Phase Journey Breadcrumb */}
+              <div className="hidden md:flex items-center gap-1.5 text-xs font-semibold">
+                {[
+                  { id: 'briefing', label: 'Briefing' },
+                  { id: 'launch', label: '1. Launch' },
+                  { id: 'orbit', label: '2. Orbit Mission' },
+                  { id: 'beamdown', label: '3. Beam Data' },
+                  { id: 'finale', label: '4. Finale' },
+                ].map((step, idx) => {
+                  const activePhase =
+                    unifiedSnapshot.phase === 'transition_orbit' ? 'launch' : unifiedSnapshot.phase;
+                  const active = activePhase === step.id;
+                  return (
+                    <div key={step.id} className="flex items-center gap-1.5">
+                      {idx > 0 && <span className="text-slate-600">→</span>}
+                      <span
+                        className={`px-2 py-0.5 whitespace-nowrap ${
+                          active
+                            ? 'bg-cyan-400 text-slate-950 font-bold'
+                            : 'text-slate-400'
+                        }`}
+                      >
+                        {step.label}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
 
-                <button
-                  type="button"
-                  onClick={() => {
-                    audioSynth.playSelect();
-                    setCurrentNasaSegment('launch');
-                  }}
-                  className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${
-                    currentNasaSegment === 'launch'
-                      ? 'bg-amber-500 text-slate-950 font-bold shadow-sm'
-                      : 'text-slate-300 hover:text-white hover:bg-slate-800'
-                  }`}
-                >
-                  <Rocket className="h-3.5 w-3.5" />
-                  <span>1. Launch</span>
-                </button>
+              {/* Right Controls: Change Mission, Sound, Space Words */}
+              <div className="flex items-center gap-2 shrink-0">
+                <span className="hidden lg:inline text-xs font-medium text-cyan-300 mr-1">
+                  {UNIFIED_MISSIONS.find((m) => m.id === unifiedSnapshot.missionId)?.title}
+                </span>
 
-                <button
-                  type="button"
-                  onClick={() => {
-                    audioSynth.playSelect();
-                    setCurrentNasaSegment('space');
-                  }}
-                  className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${
-                    currentNasaSegment === 'space'
-                      ? 'bg-cyan-500 text-slate-950 font-bold shadow-sm'
-                      : 'text-slate-300 hover:text-white hover:bg-slate-800'
-                  }`}
-                >
-                  <Orbit className="h-3.5 w-3.5" />
-                  <span>2. Space</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    audioSynth.playSelect();
-                    setCurrentNasaSegment('ground');
-                  }}
-                  className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${
-                    currentNasaSegment === 'ground'
-                      ? 'bg-emerald-500 text-slate-950 font-bold shadow-sm'
-                      : 'text-slate-300 hover:text-white hover:bg-slate-800'
-                  }`}
-                >
-                  <Radio className="h-3.5 w-3.5" />
-                  <span>3. Ground</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    audioSynth.playSelect();
-                    setCurrentNasaSegment('user');
-                  }}
-                  className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${
-                    currentNasaSegment === 'user'
-                      ? 'bg-purple-500 text-white font-bold shadow-sm'
-                      : 'text-slate-300 hover:text-white hover:bg-slate-800'
-                  }`}
-                >
-                  <FileCheck2 className="h-3.5 w-3.5" />
-                  <span>4. User</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    audioSynth.playSelect();
-                    setCurrentNasaSegment('conops');
-                  }}
-                  className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${
-                    currentNasaSegment === 'conops'
-                      ? 'bg-gradient-to-r from-cyan-500 to-emerald-400 text-slate-950 font-bold shadow-sm'
-                      : 'text-cyan-300 hover:text-white hover:bg-slate-800'
-                  }`}
-                >
-                  <Layers className="h-3.5 w-3.5" />
-                  <span>ConOps HUD</span>
-                </button>
-              </nav>
-
-              {/* Right Controls: MET Clock, Sim Ticker, Sound, Kid Dictionary */}
-              <div className="flex items-center gap-2">
-                <div className="hidden lg:flex items-center font-mono-tab text-xs border border-slate-800 bg-slate-950 px-2.5 py-1 text-cyan-300">
-                  {formatMET(missionElapsedSec)}
-                </div>
-
-                <div className="flex items-center border border-slate-800 bg-slate-900/80 p-0.5">
+                {unifiedSnapshot.phase !== 'briefing' && (
                   <button
                     type="button"
-                    onClick={() => setIsSimPaused((p) => !p)}
-                    title={isSimPaused ? 'Resume Simulation' : 'Pause Simulation'}
-                    className="p-1 text-slate-300 hover:text-white cursor-pointer"
+                    onClick={() => {
+                      audioSynth.playSelect();
+                      setBriefingRequest((prev) => ({
+                        phase: 'briefing',
+                        nonce: (prev?.nonce ?? 0) + 1,
+                      }));
+                    }}
+                    className="flex items-center gap-1 border border-slate-700 bg-slate-900/90 px-2.5 py-1 text-xs font-semibold text-slate-200 hover:border-cyan-400 hover:text-white cursor-pointer whitespace-nowrap"
                   >
-                    {isSimPaused ? <Play className="h-3.5 w-3.5 text-emerald-400" /> : <Pause className="h-3.5 w-3.5" />}
+                    <RotateCcw className="h-3.5 w-3.5" />
+                    <span>Missions</span>
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => setSimSpeedMult((s) => (s === 1 ? 2 : s === 2 ? 5 : 1))}
-                    className="px-1.5 py-0.5 font-mono-tab text-[10px] text-cyan-300 font-bold cursor-pointer"
-                  >
-                    {simSpeedMult}x
-                  </button>
-                </div>
+                )}
 
                 <button
                   type="button"
                   onClick={() => {
                     const next = !muted;
-                    audioSynth.muted = next;
+                    audioSynth.setMuted(next);
                     setMuted(next);
                   }}
                   className="p-1.5 border border-slate-800 bg-slate-900/70 text-slate-300 hover:text-white cursor-pointer"
@@ -1627,192 +1539,13 @@ export default function App() {
             </div>
           </header>
 
-          <main className="flex-1 max-w-7xl w-full mx-auto p-4 space-y-4">
-            {currentNasaSegment === 'setup' && (
-              <MissionSetupSegment
-                architectMode={architectMode}
-                onChangeArchitectMode={setArchitectMode}
-                selectedObjective={selectedObjective}
-                onSelectObjective={handleSelectObjective}
-                selectedPropulsion={selectedPropulsion}
-                onSelectPropulsion={setSelectedPropulsion}
-                propellantBudgetKg={propellantBudgetKg}
-                onChangePropellantBudget={setPropellantBudgetKg}
-                instruments={nasaInstruments}
-                onToggleInstrument={handleToggleInstrument}
-                onProceedToLaunch={() => {
-                  audioSynth.playSelect();
-                  setCurrentNasaSegment('launch');
-                }}
-              />
-            )}
-
-            {currentNasaSegment === 'launch' && (
-              <LaunchSegment
-                architectMode={architectMode}
-                selectedObjective={selectedObjective}
-                selectedRocket={selectedRocket}
-                onSelectRocket={(r) => {
-                  audioSynth.playSelect();
-                  setSelectedRocket(r);
-                }}
-                selectedPropulsion={selectedPropulsion}
-                propellantBudgetKg={propellantBudgetKg}
-                instruments={nasaInstruments}
-                burnState={burnState}
-                onUpdateBurnState={(nextBurn) => {
-                  if (nextBurn.status === 'completed') audioSynth.playSuccess();
-                  else if (nextBurn.status === 'failed') audioSynth.playAlert();
-                  setBurnState(nextBurn);
-                }}
-                onProceedToSpace={() => {
-                  audioSynth.playSelect();
-                  setCurrentNasaSegment('space');
-                }}
-                onPrevSegment={() => {
-                  audioSynth.playSelect();
-                  setCurrentNasaSegment('setup');
-                }}
-              />
-            )}
-
-            {currentNasaSegment === 'space' && (
-              <SpaceSegment
-                selectedObjective={selectedObjective}
-                orbitState={orbitState}
-                onUpdateOrbitParams={handleUpdateOrbitParams}
-                onWarpToAnomaly={handleWarpToAnomaly}
-                selectedPropulsion={selectedPropulsion}
-                propellantBudgetKg={propellantBudgetKg}
-                onApplyManeuverBurn={handleApplyManeuverBurn}
-                instruments={nasaInstruments}
-                onToggleInstrument={handleToggleInstrument}
-                onShedHeavyPayloads={handleShedHeavyPayloads}
-                hasLineOfSight={groundComm.hasLineOfSight}
-                activeStationId={groundComm.activeStationId}
-                csaChallenges={csaChallenges}
-                opsState={opsState}
-                onUpdateOpsState={setOpsState}
-                onTriggerHazardDrill={handleTriggerHazardDrill}
-                onResolveCanadarmCapture={handleResolveCanadarmCapture}
-                landmarks={landmarks}
-                onFireInstrumentScan={handleFireInstrumentScan}
-                onProceedToGround={() => {
-                  audioSynth.playSelect();
-                  setCurrentNasaSegment('ground');
-                }}
-                onPrevSegment={() => {
-                  audioSynth.playSelect();
-                  setCurrentNasaSegment('launch');
-                }}
-              />
-            )}
-
-            {currentNasaSegment === 'ground' && (
-              <GroundSegment
-                selectedObjective={selectedObjective}
-                orbitState={orbitState}
-                groundComm={groundComm}
-                landmarks={landmarks}
-                onSteerDish={handleSteerDish}
-                onSelectStation={handleSelectStation}
-                onChangeBandMode={handleChangeBandMode}
-                onChangeBandwidthPct={handleChangeBandwidthPct}
-                onToggleServoAssist={handleToggleServoAssist}
-                onFlushSsrBurst={handleFlushSsrBurst}
-                onProceedToUser={() => {
-                  audioSynth.playSelect();
-                  setCurrentNasaSegment('user');
-                }}
-                onPrevSegment={() => {
-                  audioSynth.playSelect();
-                  setCurrentNasaSegment('space');
-                }}
-              />
-            )}
-
-            {currentNasaSegment === 'user' && (
-              <UserSegment
-                selectedObjective={selectedObjective}
-                orbitState={orbitState}
-                burnState={burnState}
-                groundComm={groundComm}
-                instruments={nasaInstruments}
-                scorecard={verificationScorecard}
-                discoveryCards={discoveryCards}
-                csaChallenges={csaChallenges}
-                opsState={opsState}
-                landmarks={landmarks}
-                groundTrackCoveragePct={groundTrackCoveragePct}
-                scannedTiles={scannedTiles}
-                telemetryHistory={telemetryHistory}
-                onResetMission={() => {
-                  audioSynth.playSelect();
-                  setCurrentNasaSegment('setup');
-                }}
-                onGoToConOps={() => {
-                  audioSynth.playSelect();
-                  setCurrentNasaSegment('conops');
-                }}
-                onPrevSegment={() => {
-                  audioSynth.playSelect();
-                  setCurrentNasaSegment('ground');
-                }}
-              />
-            )}
-
-            {currentNasaSegment === 'conops' && (
-              <ConOpsSegment
-                selectedObjective={selectedObjective}
-                orbitState={orbitState}
-                burnState={burnState}
-                groundComm={groundComm}
-                instruments={nasaInstruments}
-                scorecard={verificationScorecard}
-                csaChallenges={csaChallenges}
-                opsState={opsState}
-                landmarks={landmarks}
-                groundTrackCoveragePct={groundTrackCoveragePct}
-                onOpenDictionary={() => setShowDictionaryModal(true)}
-                onNavigateSegment={(seg) => {
-                  audioSynth.playSelect();
-                  setCurrentNasaSegment(seg);
-                }}
-              />
-            )}
+          <main className="relative flex-1 min-h-0 w-full overflow-hidden">
+            <UnifiedMissionCanvas
+              onSnapshotChange={setUnifiedSnapshot}
+              externalPhaseRequest={briefingRequest}
+            />
           </main>
-
-          <footer className="border-t border-slate-900 bg-[#060a14] px-4 py-2 font-mono-tab text-[11px] text-slate-400">
-            <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-center gap-3">
-                <span className="text-slate-500">Target Body:</span>
-                <strong className="text-white uppercase">{selectedObjective.targetBody}</strong>
-                <span className="text-slate-600">|</span>
-                <span className="text-slate-500">Altitude:</span>
-                <strong className="text-cyan-300">{orbitState.altitudeKm} km</strong>
-                <span className="text-slate-600">|</span>
-                <span className="text-slate-500">Tracking Link:</span>
-                <span className={groundComm.hasLineOfSight ? 'text-emerald-400 font-bold' : 'text-amber-400 font-bold'}>
-                  {groundComm.hasLineOfSight ? 'ONLINE (LOS)' : 'BLACKOUT (OCCLUDED)'}
-                </span>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <span className="text-slate-500">Rank:</span>
-                <strong className="text-amber-300">{verificationScorecard.missionRankBadge}</strong>
-                <span className="text-slate-600">|</span>
-                <span className="text-slate-500">SE Verification:</span>
-                <span
-                  className={`px-1.5 py-0.5 font-bold ${
-                    verificationScorecard.overallPass ? 'bg-emerald-500/20 text-emerald-300' : 'bg-amber-500/20 text-amber-300'
-                  }`}
-                >
-                  {verificationScorecard.flightCertificationGrade}
-                </span>
-              </div>
-            </div>
-          </footer>
-        </>
+        </div>
       )}
 
       {/* VIEW 3: CLASSIC 3D TEAM HANGAR (1–4 Player Co-Op & Competitive Rooms) */}
@@ -1852,7 +1585,7 @@ export default function App() {
             }}
             onToggleMute={() => {
               const next = !muted;
-              audioSynth.muted = next;
+              audioSynth.setMuted(next);
               setMuted(next);
             }}
             onOpenDictionary={() => setShowDictionaryModal(true)}
@@ -2085,6 +1818,7 @@ export default function App() {
         classicConfig={classicConfig}
         classicTelemetry={classicTelemetry}
         activeAnomalyTitle={activeAnomaly?.title || null}
+        unifiedSnapshot={unifiedSnapshot}
         onOpenDictionary={() => setShowDictionaryModal(true)}
       />
 

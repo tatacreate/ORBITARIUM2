@@ -1,32 +1,30 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  Orbit,
-  Cpu,
-  ArrowRight,
-  Flame,
-  Scale,
-  ShieldAlert,
-  Sun,
-  Radar,
-  CheckCircle2,
-  BatteryCharging,
-  Crosshair,
-  Wrench,
-  FastForward,
   AlertTriangle,
+  ArrowLeft,
+  ArrowRight,
+  BatteryCharging,
+  Camera,
+  CheckCircle2,
+  Flame,
+  Orbit,
+  Shield,
+  ShieldAlert,
+  Sparkles,
+  Wrench,
+  X,
+  Zap,
 } from 'lucide-react';
 import { audioSynth } from '../../audio/synth';
+import { getArtworkForBodyAndRegime, getFriendlyLandmarkFact } from '../../data/discoveryArt';
 import {
   CELESTIAL_BODIES,
-  calculateHohmannTransfer,
   computeCanadarmEndEffector,
-  getTradeOffScenarios,
   predictManeuverOrbit,
 } from '../../engine/orbitalMechanics';
 import { NasaOrbitalScene } from '../../three/NasaOrbitalScene';
 import type {
   CsaChallengeState,
-  ManeuverNodePlan,
   NasaInstrument,
   NasaObjectiveSpec,
   OrbitalState,
@@ -62,17 +60,19 @@ interface SpaceSegmentProps {
   onPrevSegment: () => void;
 }
 
-function angleDiffDeg(a: number, b: number): number {
-  const diff = ((a - b + 540) % 360) - 180;
-  return Math.abs(diff);
+interface SpaceSpark {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  life: number;
+  color: string;
 }
 
 export function SpaceSegment({
   selectedObjective,
   orbitState,
-  onUpdateOrbitParams,
   onWarpToAnomaly,
-  selectedPropulsion,
   propellantBudgetKg,
   onApplyManeuverBurn,
   instruments,
@@ -80,7 +80,6 @@ export function SpaceSegment({
   onShedHeavyPayloads,
   hasLineOfSight,
   activeStationId,
-  csaChallenges,
   opsState,
   onUpdateOpsState,
   onTriggerHazardDrill,
@@ -91,748 +90,685 @@ export function SpaceSegment({
   onPrevSegment,
 }: SpaceSegmentProps) {
   const body = CELESTIAL_BODIES[selectedObjective.targetBody];
-  const [viewportMode, setViewportMode] = useState<'tactical-2d' | 'orbital-3d'>('tactical-2d');
-  const [cameraPreset, setCameraPreset] = useState<'hero' | 'satellite' | 'earth-view' | 'ground-station'>('hero');
-  const [activeTab, setActiveTab] = useState<'maneuvers' | 'canadarm' | 'targeting' | 'tradeoff'>('maneuvers');
+  const [viewportMode, setViewportMode] = useState<'arcade-2d' | 'orbital-3d'>('arcade-2d');
+  const [activeTab, setActiveTab] = useState<'slingshot' | 'canadarm' | 'craft'>('slingshot');
 
-  // Interactive Maneuver Node state
-  const [maneuverNode, setManeuverNode] = useState<ManeuverNodePlan>(() => {
-    const pred = predictManeuverOrbit(selectedObjective.targetBody, orbitState, { progradeMs: 120, normalMs: 0 });
-    return {
-      id: 'MN-1',
-      trueAnomalyDeg: 90,
-      progradeMs: 120,
-      normalMs: 0,
-      armed: true,
-      burnWindowActive: false,
-      executed: false,
-      predictedPeKm: pred.predictedPeKm,
-      predictedApKm: pred.predictedApKm,
-      predictedIncDeg: pred.predictedIncDeg,
-      predictedEcc: pred.predictedEcc,
-    };
-  });
+  // Visual Slingshot Drag State
+  const [slingshotBoostMs, setSlingshotBoostMs] = useState(140);
+  const [slingshotTiltMs, setSlingshotTiltMs] = useState(0);
+  const [slingshotAngleDeg, setSlingshotAngleDeg] = useState(65);
+  const [burnFlash, setBurnFlash] = useState(false);
+  const [dodgeOffsetPx, setDodgeOffsetPx] = useState(0);
+  const [scanFlash, setScanFlash] = useState(false);
 
-  const [isBurningEffect, setIsBurningEffect] = useState(false);
-  const [radarPulseActive, setRadarPulseActive] = useState(false);
-  const [scanFeedback, setScanFeedback] = useState<string | null>(null);
+  // Snapshot Pop-up Card when player snaps a planet target!
+  const [snapshotPopup, setSnapshotPopup] = useState<{
+    landmark: SurfaceLandmark;
+    artUrl: string;
+    title: string;
+    fact: string;
+  } | null>(null);
+  const [toastTip, setToastTip] = useState<string | null>(null);
 
-  const tacticalCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const armCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const draggingHandleRef = useRef<'none' | 'prograde' | 'normal'>('none');
+  const arenaCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const clawCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const dragSlingshotRef = useRef(false);
+  const sparksRef = useRef<SpaceSpark[]>([]);
+  const shakeRef = useRef(0);
+  const animPhaseRef = useRef(0);
 
-  // Keep maneuver prediction synced when orbit or node vectors change
   const predicted = predictManeuverOrbit(selectedObjective.targetBody, orbitState, {
-    progradeMs: maneuverNode.progradeMs,
-    normalMs: maneuverNode.normalMs,
+    progradeMs: slingshotBoostMs,
+    normalMs: slingshotTiltMs,
   });
-
-  const distToNodeDeg = angleDiffDeg(orbitState.trueAnomalyDeg, maneuverNode.trueAnomalyDeg);
-  const isBurnWindowActive = distToNodeDeg <= 22;
 
   const activeInstruments = instruments.filter((i) => i.enabled);
-  const totalPowerDrawW = activeInstruments.reduce((sum, i) => sum + i.powerDrawW, 0) + 110;
-  const solarErrorDeg = angleDiffDeg(opsState.solarPanelAngleDeg, opsState.sunAngleDeg);
-  const solarEfficiency = Math.max(0.15, Math.cos((Math.min(90, solarErrorDeg) * Math.PI) / 180));
-  const totalPowerGenW = orbitState.inEclipse ? 35 : Math.round(520 * solarEfficiency);
-  const powerMarginW = totalPowerGenW - totalPowerDrawW;
-  const shieldErrorDeg = angleDiffDeg(opsState.shieldAngleDeg, opsState.sunAngleDeg);
+  const capturedCount = landmarks.filter((l) => l.captured).length;
+  const fuelPct = Math.min(100, Math.round((propellantBudgetKg / Math.max(1, selectedObjective.propellantBudgetKg)) * 100));
 
-  const hohmannTargetAlt = Math.min(35786, orbitState.altitudeKm + 1200);
-  const hohmannPlan = calculateHohmannTransfer(selectedObjective.targetBody, orbitState.altitudeKm, hohmannTargetAlt);
-  const tradeOffScenarios = getTradeOffScenarios(selectedObjective);
+  const spawnSparks = useCallback((cx: number, cy: number, color: string, count = 18) => {
+    for (let i = 0; i < count; i++) {
+      const ang = Math.random() * Math.PI * 2;
+      const spd = 1.5 + Math.random() * 4.5;
+      sparksRef.current.push({
+        x: cx,
+        y: cy,
+        vx: Math.cos(ang) * spd,
+        vy: Math.sin(ang) * spd,
+        life: 32,
+        color,
+      });
+    }
+  }, []);
 
-  const handleExecuteNodeBurn = useCallback(() => {
-    const dvMag = Math.sqrt(maneuverNode.progradeMs ** 2 + maneuverNode.normalMs ** 2);
-    if (dvMag <= 0) return;
-
-    const accuracyPct = isBurnWindowActive
-      ? Math.max(84, Math.round(100 - distToNodeDeg * 0.7))
-      : Math.max(45, Math.round(78 - distToNodeDeg * 0.3));
-
-    setIsBurningEffect(true);
-    window.setTimeout(() => setIsBurningEffect(false), 1100);
-
+  // Fire Slingshot Burn
+  const handleFireSlingshot = useCallback(() => {
+    audioSynth.playMountPart();
+    setBurnFlash(true);
+    window.setTimeout(() => setBurnFlash(false), 650);
+    shakeRef.current = 8;
     onApplyManeuverBurn(
-      {
-        progradeMs: maneuverNode.progradeMs,
-        normalMs: maneuverNode.normalMs,
-        radialMs: 0,
-      },
-      accuracyPct,
+      { progradeMs: slingshotBoostMs, normalMs: slingshotTiltMs, radialMs: 0 },
+      95,
     );
-    setManeuverNode((prev) => ({ ...prev, executed: true }));
-  }, [maneuverNode, isBurnWindowActive, distToNodeDeg, onApplyManeuverBurn]);
+    setToastTip('THRUSTERS FIRED! Orbit reshaped cleanly!');
+  }, [onApplyManeuverBurn, slingshotBoostMs, slingshotTiltMs]);
 
-  // Trigger emergency burn pulse feedback
-  const handleEmergencyDodgeBurn = () => {
-    setIsBurningEffect(true);
-    window.setTimeout(() => setIsBurningEffect(false), 900);
-    onApplyManeuverBurn({ progradeMs: 32, normalMs: 12, radialMs: 0 }, 96);
-  };
+  // Snap Target Photo / Radar Scan
+  const handleSnapTarget = useCallback(
+    (specificLandmarkId?: string) => {
+      // Find closest uncaptured landmark or specific one
+      const nextTarget =
+        (specificLandmarkId ? landmarks.find((l) => l.id === specificLandmarkId) : null) ||
+        landmarks.find((l) => !l.captured);
 
-  // Interactive 2D GMAT Tactical Trajectory & Maneuver Node Canvas Render
+      if (!nextTarget) {
+        setToastTip('All 5 planet discoveries captured! Head to Ground Link to beam them home!');
+        return;
+      }
+
+      // Auto-power the required gadget if it was turned off so players never get stuck on hidden tech gates!
+      const reqInst = instruments.find((i) => i.id === nextTarget.requiredInstrument);
+      if (reqInst && !reqInst.enabled) {
+        onToggleInstrument(reqInst.id);
+      }
+
+      // Brief delay if we just toggled instrument, or fire directly via state update:
+      setScanFlash(true);
+      window.setTimeout(() => setScanFlash(false), 750);
+
+      // Compute friendly discovery popup even if instrument just toggled
+      const res = onFireInstrumentScan(nextTarget.id);
+      if (res.capturedName) {
+        const info = getFriendlyLandmarkFact(nextTarget);
+        setSnapshotPopup({
+          landmark: { ...nextTarget, captured: true, signalQualityPct: 92 },
+          artUrl: getArtworkForBodyAndRegime(
+            selectedObjective.targetBody,
+            selectedObjective.regime,
+            nextTarget.id,
+          ),
+          title: info.shortName,
+          fact: info.funFact,
+        });
+        setToastTip(`+100 Discovery Points! Snapped "${info.shortName}"!`);
+      } else {
+        // Retry once after instrument enabled on next tick
+        window.setTimeout(() => {
+          const retry = onFireInstrumentScan(nextTarget.id);
+          if (retry.capturedName) {
+            const info = getFriendlyLandmarkFact(nextTarget);
+            setSnapshotPopup({
+              landmark: { ...nextTarget, captured: true, signalQualityPct: 92 },
+              artUrl: getArtworkForBodyAndRegime(
+                selectedObjective.targetBody,
+                selectedObjective.regime,
+                nextTarget.id,
+              ),
+              title: info.shortName,
+              fact: info.funFact,
+            });
+            setToastTip(`+100 Discovery Points! Snapped "${info.shortName}"!`);
+          }
+        }, 60);
+      }
+    },
+    [
+      instruments,
+      landmarks,
+      onFireInstrumentScan,
+      onToggleInstrument,
+      selectedObjective.regime,
+      selectedObjective.targetBody,
+    ],
+  );
+
+  // Action Event Dodge (Debris Up / Down)
+  const handleDodgeDebris = useCallback(
+    (dir: 'up' | 'down') => {
+      audioSynth.playSuccess();
+      setDodgeOffsetPx(dir === 'up' ? -24 : 24);
+      shakeRef.current = 12;
+      window.setTimeout(() => setDodgeOffsetPx(0), 650);
+      onApplyManeuverBurn({ progradeMs: dir === 'up' ? 32 : -32, normalMs: 0, radialMs: 0 }, 96);
+      setToastTip(`DODGED ${dir.toUpperCase()}! Space junk zoomed safely past!`);
+    },
+    [onApplyManeuverBurn],
+  );
+
+  // Action Event Flip Heat Shield (Solar Flare)
+  const handleFlipShield = useCallback(() => {
+    audioSynth.playSuccess();
+    onUpdateOpsState((p) => ({
+      ...p,
+      shieldAngleDeg: p.sunAngleDeg,
+      activeHazard: p.activeHazard?.type === 'solar-flare' ? null : p.activeHazard,
+      hazardsSurvived: p.activeHazard?.type === 'solar-flare' ? p.hazardsSurvived + 1 : p.hazardsSurvived,
+    }));
+    if (activeInstruments.length > 2) {
+      onShedHeavyPayloads();
+    }
+    setToastTip('SHIELD FLIPPED! Solar storm sparks bounced right off!');
+  }, [activeInstruments.length, onShedHeavyPayloads, onUpdateOpsState]);
+
+  // 60FPS Space Arcade Canvas Render
   useEffect(() => {
-    if (viewportMode !== 'tactical-2d') return;
-    const canvas = tacticalCanvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    if (viewportMode !== 'arcade-2d') return;
+    let raf = 0;
 
-    const w = canvas.width;
-    const h = canvas.height;
-    const cx = w / 2;
-    const cy = h / 2;
+    const renderLoop = () => {
+      animPhaseRef.current += 0.04;
+      const canvas = arenaCanvasRef.current;
+      if (!canvas) {
+        raf = requestAnimationFrame(renderLoop);
+        return;
+      }
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
 
-    ctx.fillStyle = '#040814';
-    ctx.fillRect(0, 0, w, h);
+      const w = canvas.width;
+      const h = canvas.height;
+      const cx = w / 2;
+      const cy = h / 2;
 
-    // Subtle astrodynamics grid
-    ctx.strokeStyle = 'rgba(30, 41, 59, 0.55)';
-    ctx.lineWidth = 1;
-    for (let r = 60; r <= 240; r += 60) {
+      ctx.save();
+      if (shakeRef.current > 0) {
+        shakeRef.current -= 1;
+        ctx.translate((Math.random() - 0.5) * 9, (Math.random() - 0.5) * 9);
+      }
+
+      // Deep Space Gradient Sky
+      const bg = ctx.createRadialGradient(cx, cy, 40, cx, cy, 340);
+      bg.addColorStop(0, '#0f1c3f');
+      bg.addColorStop(1, '#040712');
+      ctx.fillStyle = bg;
+      ctx.fillRect(0, 0, w, h);
+
+      // Animated Stars
+      for (let i = 0; i < 60; i++) {
+        const sx = ((i * 137) % w);
+        const sy = ((i * 79) % h);
+        const twinkle = 0.35 + 0.55 * Math.abs(Math.sin(animPhaseRef.current * 0.5 + i));
+        ctx.fillStyle = `rgba(255,255,255,${twinkle})`;
+        ctx.beginPath();
+        ctx.arc(sx, sy, (i % 2) + 0.9, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Sun Beacon on Outer Edge (flashes during Solar Flare)
+      const sunRad = (opsState.sunAngleDeg * Math.PI) / 180;
+      const sunX = cx + Math.cos(sunRad) * 235;
+      const sunY = cy - Math.sin(sunRad) * 185;
+      const flareActive = opsState.activeHazard?.type === 'solar-flare';
+      ctx.fillStyle = flareActive ? '#fb7185' : '#fbbf24';
       ctx.beginPath();
-      ctx.arc(cx, cy, r, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-    ctx.beginPath();
-    ctx.moveTo(0, cy);
-    ctx.lineTo(w, cy);
-    ctx.moveTo(cx, 0);
-    ctx.lineTo(cx, h);
-    ctx.stroke();
-
-    // Sun Vector Indicator on Left/Edge
-    const sunRad = (opsState.sunAngleDeg * Math.PI) / 180;
-    const sunX = cx + Math.cos(sunRad) * 205;
-    const sunY = cy - Math.sin(sunRad) * 205;
-    ctx.strokeStyle = opsState.activeHazard?.type === 'solar-flare' ? '#f43f5e' : 'rgba(251, 191, 36, 0.55)';
-    ctx.setLineDash([4, 4]);
-    ctx.beginPath();
-    ctx.moveTo(cx, cy);
-    ctx.lineTo(sunX, sunY);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.fillStyle = '#fbbf24';
-    ctx.beginPath();
-    ctx.arc(sunX, sunY, 8, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.font = '10px monospace';
-    ctx.fillText('SUN VECTOR', Math.min(w - 75, Math.max(8, sunX - 28)), Math.max(14, sunY - 12));
-
-    // Visual Planet Sphere at Center
-    const planetVisR = 46;
-    const pGrad = ctx.createRadialGradient(cx - 12, cy - 12, 8, cx, cy, planetVisR);
-    if (selectedObjective.targetBody === 'mars') {
-      pGrad.addColorStop(0, '#fb923c');
-      pGrad.addColorStop(1, '#7c2d12');
-    } else if (selectedObjective.targetBody === 'moon') {
-      pGrad.addColorStop(0, '#e2e8f0');
-      pGrad.addColorStop(1, '#475569');
-    } else {
-      pGrad.addColorStop(0, '#38bdf8');
-      pGrad.addColorStop(1, '#0c4a6e');
-    }
-    ctx.fillStyle = pGrad;
-    ctx.beginPath();
-    ctx.arc(cx, cy, planetVisR, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Shadow Eclipse Cone behind Planet (opposite Sun vector)
-    ctx.fillStyle = 'rgba(2, 6, 18, 0.45)';
-    ctx.beginPath();
-    ctx.moveTo(cx + Math.cos(sunRad + Math.PI / 2) * planetVisR, cy - Math.sin(sunRad + Math.PI / 2) * planetVisR);
-    ctx.lineTo(cx - Math.cos(sunRad) * 260 + Math.cos(sunRad + Math.PI / 2) * planetVisR, cy + Math.sin(sunRad) * 260 - Math.sin(sunRad + Math.PI / 2) * planetVisR);
-    ctx.lineTo(cx - Math.cos(sunRad) * 260 - Math.cos(sunRad + Math.PI / 2) * planetVisR, cy + Math.sin(sunRad) * 260 + Math.sin(sunRad + Math.PI / 2) * planetVisR);
-    ctx.lineTo(cx - Math.cos(sunRad + Math.PI / 2) * planetVisR, cy + Math.sin(sunRad + Math.PI / 2) * planetVisR);
-    ctx.closePath();
-    ctx.fill();
-
-    // Orbit Geometry Scaling
-    const baseRx = Math.min(165, Math.max(82, 82 + (orbitState.altitudeKm / 2500) * 65));
-    const baseRy = baseRx * Math.sqrt(Math.max(0.28, 1 - orbitState.eccentricity ** 2));
-
-    // Predicted Transfer Orbit Ellipse (Dashed Amber)
-    const predRx = Math.min(210, Math.max(70, 82 + (predicted.predictedAltKm / 2500) * 65));
-    const predRy = predRx * Math.sqrt(Math.max(0.28, 1 - predicted.predictedEcc ** 2));
-
-    ctx.strokeStyle = 'rgba(245, 158, 11, 0.8)';
-    ctx.lineWidth = 2;
-    ctx.setLineDash([6, 5]);
-    ctx.beginPath();
-    for (let i = 0; i <= 90; i++) {
-      const th = (i / 90) * Math.PI * 2;
-      const px = cx + predRx * Math.cos(th);
-      const py = cy - predRy * Math.sin(th);
-      if (i === 0) ctx.moveTo(px, py);
-      else ctx.lineTo(px, py);
-    }
-    ctx.stroke();
-    ctx.setLineDash([]);
-
-    // Current Active Orbit Ellipse (Solid Cyan)
-    ctx.strokeStyle = '#06b6d4';
-    ctx.lineWidth = 2.5;
-    ctx.beginPath();
-    for (let i = 0; i <= 90; i++) {
-      const th = (i / 90) * Math.PI * 2;
-      const ox = cx + baseRx * Math.cos(th);
-      const oy = cy - baseRy * Math.sin(th);
-      if (i === 0) ctx.moveTo(ox, oy);
-      else ctx.lineTo(ox, oy);
-    }
-    ctx.stroke();
-
-    // Maneuver Node Marker (MN-1) + Burn Window Arc
-    const mnRad = (maneuverNode.trueAnomalyDeg * Math.PI) / 180;
-    const mnX = cx + baseRx * Math.cos(mnRad);
-    const mnY = cy - baseRy * Math.sin(mnRad);
-
-    // Highlight ±22° Burn Window Arc around node
-    ctx.strokeStyle = isBurnWindowActive ? '#10b981' : 'rgba(245, 158, 11, 0.45)';
-    ctx.lineWidth = 6;
-    ctx.beginPath();
-    for (let deg = maneuverNode.trueAnomalyDeg - 22; deg <= maneuverNode.trueAnomalyDeg + 22; deg += 2) {
-      const rad = (deg * Math.PI) / 180;
-      const wx = cx + baseRx * Math.cos(rad);
-      const wy = cy - baseRy * Math.sin(rad);
-      if (deg === maneuverNode.trueAnomalyDeg - 22) ctx.moveTo(wx, wy);
-      else ctx.lineTo(wx, wy);
-    }
-    ctx.stroke();
-
-    // Prograde / Retrograde Draggable Vector Handle from Node
-    const tanX = -baseRx * Math.sin(mnRad);
-    const tanY = -baseRy * Math.cos(mnRad);
-    const tanLen = Math.hypot(tanX, tanY) || 1;
-    const ux = tanX / tanLen;
-    const uy = tanY / tanLen;
-    const handleDist = (maneuverNode.progradeMs / 600) * 65;
-    const hx = mnX + ux * handleDist;
-    const hy = mnY + uy * handleDist;
-
-    ctx.strokeStyle = '#fbbf24';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(mnX, mnY);
-    ctx.lineTo(hx, hy);
-    ctx.stroke();
-
-    // Prograde Drag Handle Circle
-    ctx.fillStyle = '#f59e0b';
-    ctx.beginPath();
-    ctx.arc(hx, hy, 7, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = '#ffffff';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-
-    // Maneuver Node Diamond
-    ctx.save();
-    ctx.translate(mnX, mnY);
-    ctx.rotate(Math.PI / 4);
-    ctx.fillStyle = isBurnWindowActive ? '#10b981' : '#f59e0b';
-    ctx.fillRect(-6, -6, 12, 12);
-    ctx.restore();
-    ctx.fillStyle = '#fde68a';
-    ctx.font = 'bold 10px monospace';
-    ctx.fillText(`MN-1 (${Math.round(maneuverNode.trueAnomalyDeg)}°)`, mnX + 12, mnY - 10);
-
-    // Spacecraft Position on Orbit
-    const nuRad = (orbitState.trueAnomalyDeg * Math.PI) / 180;
-    const sx = cx + baseRx * Math.cos(nuRad);
-    const sy = cy - baseRy * Math.sin(nuRad);
-
-    // Debris Threat Marker if Debris Hazard Active
-    if (opsState.activeHazard?.type === 'debris') {
-      const debRad = nuRad + 0.35;
-      const dx = cx + (baseRx + 6) * Math.cos(debRad);
-      const dy = cy - (baseRy + 6) * Math.sin(debRad);
-      ctx.fillStyle = '#f43f5e';
-      ctx.beginPath();
-      ctx.arc(dx, dy, 6, 0, Math.PI * 2);
+      ctx.arc(sunX, sunY, flareActive ? 18 + Math.sin(animPhaseRef.current * 4) * 3 : 12, 0, Math.PI * 2);
       ctx.fill();
-      ctx.strokeStyle = 'rgba(244, 63, 94, 0.7)';
+      if (flareActive) {
+        ctx.strokeStyle = 'rgba(251, 113, 133, 0.7)';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(sunX, sunY, 26, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      // Colorful Planet Center (Earth / Moon / Mars)
+      const planetR = 64;
+      const pGrad = ctx.createRadialGradient(cx - 18, cy - 18, 10, cx, cy, planetR);
+      if (selectedObjective.targetBody === 'mars') {
+        pGrad.addColorStop(0, '#fb923c');
+        pGrad.addColorStop(0.7, '#c2410c');
+        pGrad.addColorStop(1, '#451a03');
+      } else if (selectedObjective.targetBody === 'moon') {
+        pGrad.addColorStop(0, '#f1f5f9');
+        pGrad.addColorStop(0.7, '#94a3b8');
+        pGrad.addColorStop(1, '#334155');
+      } else {
+        pGrad.addColorStop(0, '#38bdf8');
+        pGrad.addColorStop(0.65, '#0284c7');
+        pGrad.addColorStop(1, '#082f49');
+      }
+      ctx.fillStyle = pGrad;
       ctx.beginPath();
-      ctx.arc(dx, dy, 12, 0, Math.PI * 2);
+      ctx.arc(cx, cy, planetR, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Atmospheric Glow Ring
+      ctx.strokeStyle =
+        selectedObjective.targetBody === 'mars'
+          ? 'rgba(251, 146, 60, 0.35)'
+          : selectedObjective.targetBody === 'moon'
+            ? 'rgba(226, 232, 240, 0.2)'
+            : 'rgba(56, 189, 248, 0.45)';
+      ctx.lineWidth = 7;
+      ctx.beginPath();
+      ctx.arc(cx, cy, planetR + 3, 0, Math.PI * 2);
       ctx.stroke();
-      ctx.fillStyle = '#fda4af';
-      ctx.fillText('DEBRIS!', dx + 10, dy + 4);
-    }
 
-    // Spacecraft Icon + Shield & Solar Orientation Indicators
-    ctx.save();
-    ctx.translate(sx, sy);
+      // Target Surface Rings around the planet rim
+      landmarks.forEach((lm, idx) => {
+        const ringAng = ((idx / landmarks.length) * Math.PI * 2) + animPhaseRef.current * 0.08;
+        const lx = cx + Math.cos(ringAng) * (planetR - 14);
+        const ly = cy + Math.sin(ringAng) * (planetR - 14);
+        ctx.fillStyle = lm.captured ? '#34d399' : '#fbbf24';
+        ctx.beginPath();
+        ctx.arc(lx, ly, lm.captured ? 5 : 6 + Math.sin(animPhaseRef.current * 3 + idx) * 1.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      });
 
-    // Radiation Shield Arc facing shieldAngleDeg
-    const shRad = (opsState.shieldAngleDeg * Math.PI) / 180;
-    ctx.strokeStyle = shieldErrorDeg <= 22 ? '#10b981' : '#f59e0b';
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.arc(0, 0, 15, -shRad - 0.65, -shRad + 0.65);
-    ctx.stroke();
+      // Orbit Scales
+      const rx = Math.min(185, Math.max(105, 105 + (orbitState.altitudeKm / 2600) * 70));
+      const ry = rx * Math.sqrt(Math.max(0.42, 1 - orbitState.eccentricity ** 2)) * 0.82;
 
-    // Solar Panel Wings
-    const solRad = (opsState.solarPanelAngleDeg * Math.PI) / 180;
-    ctx.rotate(-solRad);
-    ctx.fillStyle = solarErrorDeg <= 20 ? '#38bdf8' : '#64748b';
-    ctx.fillRect(-13, -2, 26, 4);
-    ctx.restore();
+      // Predicted Slingshot Orbit (Dashed Amber)
+      const pRx = Math.min(240, Math.max(92, 105 + (predicted.predictedAltKm / 2600) * 70));
+      const pRy = pRx * Math.sqrt(Math.max(0.42, 1 - predicted.predictedEcc ** 2)) * 0.82;
+      ctx.strokeStyle = 'rgba(251, 191, 36, 0.78)';
+      ctx.lineWidth = 2.5;
+      ctx.setLineDash([7, 6]);
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, pRx, pRy, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
 
-    // Spacecraft Core Dot
-    ctx.fillStyle = '#ffffff';
-    ctx.beginPath();
-    ctx.arc(sx, sy, 5, 0, Math.PI * 2);
-    ctx.fill();
+      // Active Glowing Neon Orbit Trail
+      ctx.strokeStyle = '#22d3ee';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+      ctx.stroke();
 
-    // Radar Scan Pulse Ring when firing
-    if (radarPulseActive) {
-      ctx.strokeStyle = 'rgba(16, 185, 129, 0.9)';
+      // Slingshot Drag Handle on Orbit
+      const sRad = (slingshotAngleDeg * Math.PI) / 180;
+      const nodeX = cx + rx * Math.cos(sRad);
+      const nodeY = cy - ry * Math.sin(sRad);
+      const tanX = -rx * Math.sin(sRad);
+      const tanY = -ry * Math.cos(sRad);
+      const tanLen = Math.hypot(tanX, tanY) || 1;
+      const pullLen = Math.max(-55, Math.min(65, (slingshotBoostMs / 400) * 58));
+      const handleX = nodeX + (tanX / tanLen) * pullLen;
+      const handleY = nodeY + (tanY / tanLen) * pullLen;
+
+      ctx.strokeStyle = '#fbbf24';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(nodeX, nodeY);
+      ctx.lineTo(handleX, handleY);
+      ctx.stroke();
+
+      ctx.fillStyle = '#f59e0b';
+      ctx.beginPath();
+      ctx.arc(handleX, handleY, 9, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#ffffff';
       ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(sx, sy, 26, 0, Math.PI * 2);
       ctx.stroke();
-    }
+      ctx.fillStyle = '#fef08a';
+      ctx.font = 'bold 10px sans-serif';
+      ctx.fillText('DRAG SLINGSHOT', Math.min(w - 105, Math.max(8, handleX + 12)), Math.max(14, handleY + 4));
 
-    // Legend Corner
-    ctx.fillStyle = '#94a3b8';
-    ctx.font = '10px monospace';
-    ctx.fillText('Click orbit to place MN-1 · Drag amber handle for Δv', 10, 18);
-    ctx.fillStyle = isBurnWindowActive ? '#34d399' : '#cbd5e1';
-    ctx.fillText(
-      `SAT ν=${Math.round(orbitState.trueAnomalyDeg)}° | MN-1 Δ=${Math.round(distToNodeDeg)}° ${isBurnWindowActive ? '(BURN WINDOW ACTIVE!)' : ''}`,
-      10,
-      h - 10,
-    );
+      // Spacecraft Current Position
+      const satRad = (orbitState.trueAnomalyDeg * Math.PI) / 180;
+      const satX = cx + rx * Math.cos(satRad);
+      const satY = cy - ry * Math.sin(satRad) + dodgeOffsetPx;
+
+      // Sweeping Emerald Scanner Cone from Satellite toward Planet
+      ctx.fillStyle = scanFlash ? 'rgba(52, 211, 153, 0.5)' : 'rgba(52, 211, 153, 0.14)';
+      ctx.beginPath();
+      ctx.moveTo(satX, satY);
+      const toCenterAng = Math.atan2(cy - satY, cx - satX);
+      ctx.lineTo(satX + Math.cos(toCenterAng - 0.24) * 75, satY + Math.sin(toCenterAng - 0.24) * 75);
+      ctx.lineTo(satX + Math.cos(toCenterAng + 0.24) * 75, satY + Math.sin(toCenterAng + 0.24) * 75);
+      ctx.closePath();
+      ctx.fill();
+
+      // Incoming Red Space Debris Warning Lane!
+      if (opsState.activeHazard?.type === 'debris') {
+        ctx.strokeStyle = 'rgba(244, 63, 94, 0.85)';
+        ctx.lineWidth = 2.5;
+        ctx.setLineDash([6, 4]);
+        ctx.beginPath();
+        ctx.moveTo(0, satY);
+        ctx.lineTo(w, satY);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Animated streaking junk rock
+        const junkX = (animPhaseRef.current * 90) % w;
+        ctx.fillStyle = '#f43f5e';
+        ctx.beginPath();
+        ctx.arc(junkX, satY, 9, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#fecdd3';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+
+      // Draw Cute Colorful Satellite Sprite
+      ctx.save();
+      ctx.translate(satX, satY);
+      // Solar wings
+      ctx.fillStyle = '#38bdf8';
+      ctx.fillRect(-20, -4, 13, 8);
+      ctx.fillRect(7, -4, 13, 8);
+      // Gold Body
+      ctx.fillStyle = '#fbbf24';
+      ctx.fillRect(-7, -7, 14, 14);
+      ctx.strokeStyle = '#0f172a';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(-7, -7, 14, 14);
+      // Thruster Burn Flash
+      if (burnFlash) {
+        ctx.fillStyle = '#f97316';
+        ctx.beginPath();
+        ctx.arc(0, 0, 18, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+
+      // Update & Draw Sparks
+      sparksRef.current = sparksRef.current
+        .map((sp) => ({ ...sp, x: sp.x + sp.vx, y: sp.y + sp.vy, life: sp.life - 1 }))
+        .filter((sp) => sp.life > 0);
+      sparksRef.current.forEach((sp) => {
+        ctx.fillStyle = sp.color;
+        ctx.globalAlpha = sp.life / 32;
+        ctx.beginPath();
+        ctx.arc(sp.x, sp.y, 3, 0, Math.PI * 2);
+        ctx.fill();
+      });
+      ctx.globalAlpha = 1;
+
+      ctx.restore();
+      raf = requestAnimationFrame(renderLoop);
+    };
+
+    raf = requestAnimationFrame(renderLoop);
+    return () => cancelAnimationFrame(raf);
   }, [
     viewportMode,
-    orbitState,
-    maneuverNode,
-    predicted,
     selectedObjective.targetBody,
-    opsState,
-    isBurnWindowActive,
-    distToNodeDeg,
-    shieldErrorDeg,
-    solarErrorDeg,
-    radarPulseActive,
+    orbitState.altitudeKm,
+    orbitState.eccentricity,
+    orbitState.trueAnomalyDeg,
+    predicted.predictedAltKm,
+    predicted.predictedEcc,
+    slingshotAngleDeg,
+    slingshotBoostMs,
+    opsState.sunAngleDeg,
+    opsState.activeHazard,
+    landmarks,
+    scanFlash,
+    burnFlash,
+    dodgeOffsetPx,
   ]);
 
-  // Mouse Interactions on 2D GMAT Tactical Canvas (Click to place MN-1 or Drag Prograde handle)
-  const handleTacticalPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    const canvas = tacticalCanvasRef.current;
-    if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
-    const px = (e.clientX - rect.left) * scaleX;
-    const py = (e.clientY - rect.top) * scaleY;
-
-    const cx = canvas.width / 2;
-    const cy = canvas.height / 2;
-    const baseRx = Math.min(165, Math.max(82, 82 + (orbitState.altitudeKm / 2500) * 65));
-    const baseRy = baseRx * Math.sqrt(Math.max(0.28, 1 - orbitState.eccentricity ** 2));
-
-    const mnRad = (maneuverNode.trueAnomalyDeg * Math.PI) / 180;
-    const mnX = cx + baseRx * Math.cos(mnRad);
-    const mnY = cy - baseRy * Math.sin(mnRad);
-    const tanX = -baseRx * Math.sin(mnRad);
-    const tanY = -baseRy * Math.cos(mnRad);
-    const tanLen = Math.hypot(tanX, tanY) || 1;
-    const handleDist = (maneuverNode.progradeMs / 600) * 65;
-    const hx = mnX + (tanX / tanLen) * handleDist;
-    const hy = mnY + (tanY / tanLen) * handleDist;
-
-    if (Math.hypot(px - hx, py - hy) < 18) {
-      draggingHandleRef.current = 'prograde';
-      canvas.setPointerCapture(e.pointerId);
-      return;
-    }
-
-    // Place node at clicked orbital true anomaly
-    const angleRad = Math.atan2(-(py - cy) / baseRy, (px - cx) / baseRx);
-    const angleDeg = ((angleRad * 180) / Math.PI + 360) % 360;
-    audioSynth.playSelect();
-    setManeuverNode((prev) => ({
-      ...prev,
-      trueAnomalyDeg: Math.round(angleDeg),
-      executed: false,
-    }));
+  // Drag Slingshot Handle on 2D Arena Canvas
+  const updateSlingshotFromPointer = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * 580 - 290;
+    const y = 215 - ((e.clientY - rect.top) / rect.height) * 430;
+    const dist = Math.hypot(x, y);
+    const angle = ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
+    setSlingshotAngleDeg(Math.round(angle));
+    onWarpToAnomaly(Math.round(angle));
+    const mappedBoost = Math.round(Math.max(-220, Math.min(420, (dist - 120) * 3.5)));
+    setSlingshotBoostMs(mappedBoost);
   };
 
-  const handleTacticalPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (draggingHandleRef.current !== 'prograde') return;
-    const canvas = tacticalCanvasRef.current;
-    if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
-    const px = (e.clientX - rect.left) * (canvas.width / rect.width);
-    const py = (e.clientY - rect.top) * (canvas.height / rect.height);
-
-    const cx = canvas.width / 2;
-    const cy = canvas.height / 2;
-    const baseRx = Math.min(165, Math.max(82, 82 + (orbitState.altitudeKm / 2500) * 65));
-    const baseRy = baseRx * Math.sqrt(Math.max(0.28, 1 - orbitState.eccentricity ** 2));
-    const mnRad = (maneuverNode.trueAnomalyDeg * Math.PI) / 180;
-    const mnX = cx + baseRx * Math.cos(mnRad);
-    const mnY = cy - baseRy * Math.sin(mnRad);
-    const tanX = -baseRx * Math.sin(mnRad);
-    const tanY = -baseRy * Math.cos(mnRad);
-    const tanLen = Math.hypot(tanX, tanY) || 1;
-
-    const projPx = (px - mnX) * (tanX / tanLen) + (py - mnY) * (tanY / tanLen);
-    const nextPrograde = Math.max(-400, Math.min(600, Math.round((projPx / 65) * 600 / 10) * 10));
-    setManeuverNode((prev) => ({ ...prev, progradeMs: nextPrograde, executed: false }));
-  };
-
-  const handleTacticalPointerUp = () => {
-    draggingHandleRef.current = 'none';
-  };
-
-  // CSA Canadarm3 Robotic Bay Canvas Render
-  const armKinematics = computeCanadarmEndEffector(
+  // Canadarm Claw Bay Render
+  const armKin = computeCanadarmEndEffector(
     opsState.canadarm.shoulderDeg,
     opsState.canadarm.elbowDeg,
     opsState.canadarm.wristDeg,
   );
-  const armDistToTarget = Math.hypot(
-    armKinematics.endX - opsState.canadarm.targetX,
-    armKinematics.endY - opsState.canadarm.targetY,
-  );
-  const armInGrappleZone = armDistToTarget <= 0.16;
+  const armDist = Math.hypot(armKin.endX - opsState.canadarm.targetX, armKin.endY - opsState.canadarm.targetY);
+  const clawLockedZone = armDist <= 0.18;
 
   useEffect(() => {
     if (activeTab !== 'canadarm') return;
-    const canvas = armCanvasRef.current;
+    const canvas = clawCanvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
     const w = canvas.width;
     const h = canvas.height;
-    ctx.fillStyle = '#040814';
+    ctx.fillStyle = '#050a18';
     ctx.fillRect(0, 0, w, h);
 
     // Bay Grid
-    ctx.strokeStyle = 'rgba(30, 41, 59, 0.55)';
+    ctx.strokeStyle = 'rgba(56, 189, 248, 0.14)';
     ctx.lineWidth = 1;
-    for (let x = 0; x < w; x += 40) {
+    for (let gx = 40; gx < w; gx += 40) {
       ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, h);
+      ctx.moveTo(gx, 0);
+      ctx.lineTo(gx, h);
       ctx.stroke();
     }
-    for (let y = 0; y < h; y += 40) {
+    for (let gy = 40; gy < h; gy += 40) {
       ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(w, y);
+      ctx.moveTo(0, gy);
+      ctx.lineTo(w, gy);
       ctx.stroke();
     }
 
-    // Coordinate transform: normalized bay x in [-1, 1], y in [0, 1.3] -> pixels
     const toPx = (nx: number, ny: number) => ({
-      x: w * 0.5 + nx * (w * 0.42),
-      y: h - 28 - ny * (h * 0.72),
+      x: w / 2 + nx * (w * 0.4),
+      y: h - 22 - ny * (h - 46),
     });
 
-    // Spacecraft Cargo Deck Base
-    ctx.fillStyle = '#1e293b';
-    ctx.fillRect(0, h - 28, w, 28);
-    ctx.strokeStyle = '#38bdf8';
+    const tPos = toPx(opsState.canadarm.targetX, opsState.canadarm.targetY);
+    // Floating Pod / Target
+    ctx.fillStyle = clawLockedZone ? 'rgba(16, 185, 129, 0.25)' : 'rgba(251, 191, 36, 0.2)';
+    ctx.strokeStyle = clawLockedZone ? '#34d399' : '#fbbf24';
+    ctx.lineWidth = 3;
     ctx.beginPath();
-    ctx.moveTo(0, h - 28);
-    ctx.lineTo(w, h - 28);
+    ctx.arc(tPos.x, tPos.y, 24, 0, Math.PI * 2);
+    ctx.fill();
     ctx.stroke();
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 10px sans-serif';
+    ctx.fillText('POD', tPos.x - 11, tPos.y + 4);
 
-    // Target Payload / Gateway Module / Damaged Solar Wing
-    const tPx = toPx(opsState.canadarm.targetX, opsState.canadarm.targetY);
-    ctx.save();
-    ctx.translate(tPx.x, tPx.y);
-    ctx.strokeStyle = armInGrappleZone ? '#10b981' : '#f59e0b';
-    ctx.lineWidth = 2;
-    ctx.setLineDash([4, 4]);
-    ctx.beginPath();
-    ctx.arc(0, 0, 26, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.setLineDash([]);
-
-    if (opsState.canadarm.targetType === 'cubesat') {
-      ctx.fillStyle = '#cbd5e1';
-      ctx.fillRect(-12, -12, 24, 24);
-      ctx.fillStyle = '#06b6d4';
-      ctx.fillRect(-24, -4, 12, 8);
-      ctx.fillRect(12, -4, 12, 8);
-    } else if (opsState.canadarm.targetType === 'gateway-module') {
-      ctx.fillStyle = '#e2e8f0';
-      ctx.fillRect(-18, -10, 36, 20);
-      ctx.fillStyle = '#f59e0b';
-      ctx.fillRect(-6, -14, 12, 4);
-    } else {
-      ctx.fillStyle = '#0ea5e9';
-      ctx.fillRect(-20, -8, 40, 16);
-      ctx.strokeStyle = '#f43f5e';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(-14, -8);
-      ctx.lineTo(14, 8);
-      ctx.stroke();
-    }
-    ctx.restore();
-
-    // Canadarm3 Articulated Links
-    const pts = armKinematics.joints.map((j) => toPx(j.x, j.y));
+    // Draw Robot Arm
+    const pts = armKin.joints.map((j) => toPx(j.x, j.y));
+    ctx.strokeStyle = '#22d3ee';
+    ctx.lineWidth = 9;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
-    ctx.strokeStyle = '#e2e8f0';
-    ctx.lineWidth = 10;
     ctx.beginPath();
-    pts.forEach((p, idx) => (idx === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
-    ctx.stroke();
-
-    ctx.strokeStyle = '#06b6d4';
-    ctx.lineWidth = 4;
-    ctx.beginPath();
-    pts.forEach((p, idx) => (idx === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
-    ctx.stroke();
-
-    // Joint Servos
     pts.forEach((p, idx) => {
-      ctx.fillStyle = idx === pts.length - 1 ? (armInGrappleZone ? '#10b981' : '#f59e0b') : '#0f172a';
+      if (idx === 0) ctx.moveTo(p.x, p.y);
+      else ctx.lineTo(p.x, p.y);
+    });
+    ctx.stroke();
+
+    pts.forEach((p, idx) => {
+      ctx.fillStyle = idx === pts.length - 1 ? (clawLockedZone ? '#34d399' : '#fbbf24') : '#0f172a';
       ctx.beginPath();
-      ctx.arc(p.x, p.y, idx === pts.length - 1 ? 8 : 6, 0, Math.PI * 2);
+      ctx.arc(p.x, p.y, idx === pts.length - 1 ? 9 : 6, 0, Math.PI * 2);
       ctx.fill();
-      ctx.strokeStyle = idx === pts.length - 1 ? '#ffffff' : '#22d3ee';
+      ctx.strokeStyle = '#ffffff';
       ctx.lineWidth = 2;
       ctx.stroke();
     });
+  }, [activeTab, armKin, clawLockedZone, opsState.canadarm]);
 
-    ctx.fillStyle = '#94a3b8';
-    ctx.font = '10px monospace';
-    ctx.fillText(
-      `TARGET: ${opsState.canadarm.targetType.toUpperCase()} · RANGE: ${(armDistToTarget * 10).toFixed(1)} m`,
-      10,
-      16,
-    );
-  }, [activeTab, opsState.canadarm, armKinematics, armDistToTarget, armInGrappleZone]);
-
-  // Keyboard support when Canadarm tab is active
-  useEffect(() => {
-    if (activeTab !== 'canadarm') return;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-      if (e.key.toLowerCase() === 'q') {
-        onUpdateOpsState((p) => ({ ...p, canadarm: { ...p.canadarm, shoulderDeg: Math.min(155, p.canadarm.shoulderDeg + 5) } }));
-      } else if (e.key.toLowerCase() === 'e') {
-        onUpdateOpsState((p) => ({ ...p, canadarm: { ...p.canadarm, shoulderDeg: Math.max(25, p.canadarm.shoulderDeg - 5) } }));
-      } else if (e.key.toLowerCase() === 'w') {
-        onUpdateOpsState((p) => ({ ...p, canadarm: { ...p.canadarm, elbowDeg: Math.min(120, p.canadarm.elbowDeg + 6) } }));
-      } else if (e.key.toLowerCase() === 's') {
-        onUpdateOpsState((p) => ({ ...p, canadarm: { ...p.canadarm, elbowDeg: Math.max(-120, p.canadarm.elbowDeg - 6) } }));
-      } else if (e.key.toLowerCase() === 'a') {
-        onUpdateOpsState((p) => ({ ...p, canadarm: { ...p.canadarm, wristDeg: Math.min(90, p.canadarm.wristDeg + 6) } }));
-      } else if (e.key.toLowerCase() === 'd') {
-        onUpdateOpsState((p) => ({ ...p, canadarm: { ...p.canadarm, wristDeg: Math.max(-90, p.canadarm.wristDeg - 6) } }));
-      } else if (e.code === 'Space') {
-        e.preventDefault();
-        onResolveCanadarmCapture();
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [activeTab, onUpdateOpsState, onResolveCanadarmCapture]);
-
-  const handleFireScan = (landmarkId?: string) => {
-    setRadarPulseActive(true);
-    window.setTimeout(() => setRadarPulseActive(false), 950);
-    const res = onFireInstrumentScan(landmarkId);
-    setScanFeedback(res.message);
+  // Helper to nudge Canadarm easily with intuitive Up/Down/Left/Right buttons!
+  const nudgeCanadarm = (dx: number, dy: number) => {
+    onUpdateOpsState((p) => ({
+      ...p,
+      canadarm: {
+        ...p.canadarm,
+        shoulderDeg: Math.max(25, Math.min(155, p.canadarm.shoulderDeg + dx * 8)),
+        elbowDeg: Math.max(-120, Math.min(120, p.canadarm.elbowDeg + dy * 10)),
+      },
+    }));
   };
 
   return (
     <div className="space-y-4">
       {/* Segment Header */}
-      <div className="flex flex-wrap items-center justify-between gap-4 border border-slate-800 bg-[#080d19] p-4 shadow-xl">
+      <div className="flex flex-wrap items-center justify-between gap-4 border border-cyan-500/30 bg-[#091122] p-4 shadow-xl">
         <div>
-          <div className="flex items-center gap-2">
-            <span className="border border-cyan-500/50 bg-cyan-950/40 px-2 py-0.5 font-mono-tab text-[10px] font-bold uppercase tracking-wider text-cyan-300">
-              NASA Segment 2: Active Space Operations
-            </span>
-            <span className="text-xs text-slate-400">· GMAT Maneuver Nodes, CSA Canadarm3 &amp; Hazard Defense</span>
+          <div className="flex items-center gap-2 text-xs font-bold text-cyan-300">
+            <Orbit className="h-4 w-4" />
+            <span>Mission Phase 2 · Space Action Sandbox</span>
           </div>
-          <h2 className="mt-1 font-display text-xl md:text-2xl font-bold text-white">
-            Orbital Piloting, Robotic Capture &amp; Real-Time Space Hazards
+          <h2 className="mt-1 font-display text-2xl font-black text-white">
+            Sling Orbits, Snap Planet Pics &amp; Dodge Hazards!
           </h2>
-          <p className="mt-1 text-xs text-slate-300">
-            Place &amp; fire maneuver nodes on the GMAT orbit ring, grapple payloads with Canadarm3, shield/orient against space storms, and pulse-scan planetary surface targets.
+          <p className="mt-0.5 text-xs text-slate-300">
+            Drag the glowing Slingshot Arrow to bend your orbit, tap SNAP PHOTO to capture target rings, and grab pods with Canadarm3!
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={() => onTriggerHazardDrill()}
-            className="border border-amber-500/50 bg-amber-950/30 px-3 py-2 font-mono-tab text-[11px] font-bold text-amber-300 hover:bg-amber-900/40 cursor-pointer"
+            className="border border-amber-400/60 bg-amber-950/40 px-3.5 py-2 text-xs font-bold text-amber-200 hover:bg-amber-900/50 cursor-pointer"
           >
-            Trigger Space Crisis Drill
+            Trigger Action Event!
           </button>
           <button
             type="button"
             onClick={onPrevSegment}
-            className="border border-slate-700 bg-slate-800/80 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-700 cursor-pointer"
+            className="flex items-center gap-1 border border-slate-700 bg-slate-800 px-3.5 py-2 text-xs font-bold text-slate-200 hover:bg-slate-700 cursor-pointer"
           >
-            ← Launch
+            <ArrowLeft className="h-3.5 w-3.5" />
+            <span>Launch</span>
           </button>
           <button
             type="button"
             onClick={onProceedToGround}
-            className="flex items-center gap-2 bg-cyan-500 px-5 py-2 text-xs font-bold text-slate-950 hover:bg-cyan-400 transition-colors cursor-pointer"
+            className="flex items-center gap-2 bg-emerald-400 px-5 py-2.5 text-xs font-black text-slate-950 hover:bg-emerald-300 cursor-pointer"
           >
-            <span>Segment 3: Ground Dish →</span>
+            <span>Next: Laser Dish Link</span>
             <ArrowRight className="h-4 w-4" />
           </button>
         </div>
       </div>
 
-      {/* Live Crisis Alarm Banner */}
+      {/* Live Action Event Banner (Debris Dodge / Solar Flare Shield / Power Save) */}
       {opsState.activeHazard && (
-        <div
-          className={`border p-3.5 flex flex-wrap items-center justify-between gap-3 ${
-            opsState.activeHazard.severity === 'critical'
-              ? 'border-rose-500/70 bg-rose-950/40 text-rose-100'
-              : 'border-amber-500/70 bg-amber-950/35 text-amber-100'
-          }`}
-        >
-          <div className="flex items-start gap-3">
-            <AlertTriangle className="h-5 w-5 text-amber-300 shrink-0 mt-0.5" />
+        <div className="border-2 border-rose-500 bg-rose-950/55 p-4 flex flex-wrap items-center justify-between gap-3 shadow-lg">
+          <div className="flex items-center gap-3">
+            <AlertTriangle className="h-6 w-6 text-amber-300 shrink-0" />
             <div>
-              <div className="flex flex-wrap items-center gap-2 font-mono-tab text-xs font-bold uppercase">
-                <span>▲ ACTIVE SPACE HAZARD: {opsState.activeHazard.title}</span>
-                <span className="border border-rose-400/50 bg-rose-950/80 px-2 py-0.5 text-[11px] text-rose-200">
-                  T-{Math.max(0, opsState.activeHazard.timeRemainingSec).toFixed(1)}s
+              <div className="flex items-center gap-2 font-display text-base font-black text-white">
+                <span>
+                  {opsState.activeHazard.type === 'debris'
+                    ? 'INCOMING SPACE JUNK! DODGE NOW!'
+                    : opsState.activeHazard.type === 'solar-flare'
+                      ? 'SOLAR FLARE ALERT! FLIP HEAT SHIELD!'
+                      : 'SHADOW BATTERY LOW! SAVE POWER!'}
+                </span>
+                <span className="bg-rose-500 text-slate-950 px-2 py-0.5 text-xs font-black">
+                  {Math.max(0, opsState.activeHazard.timeRemainingSec).toFixed(1)}s
                 </span>
               </div>
-              <p className="mt-1 text-xs text-slate-200">{opsState.activeHazard.detail}</p>
-              <p className="mt-1 font-mono-tab text-[11px] text-cyan-300">
-                Required Action: {opsState.activeHazard.actionHint}
-              </p>
+              <p className="text-xs text-rose-100 mt-0.5">{opsState.activeHazard.actionHint}</p>
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-2">
             {opsState.activeHazard.type === 'debris' && (
-              <button
-                type="button"
-                onClick={handleEmergencyDodgeBurn}
-                className="bg-rose-500 hover:bg-rose-400 text-slate-950 px-3.5 py-2 font-mono-tab text-xs font-bold uppercase cursor-pointer"
-              >
-                Fire 32 m/s Dodge Burn
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={() => handleDodgeDebris('up')}
+                  className="bg-amber-400 hover:bg-amber-300 text-slate-950 px-4 py-2.5 text-xs font-black cursor-pointer"
+                >
+                  ▲ DODGE UP!
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDodgeDebris('down')}
+                  className="bg-cyan-400 hover:bg-cyan-300 text-slate-950 px-4 py-2.5 text-xs font-black cursor-pointer"
+                >
+                  ▼ DODGE DOWN!
+                </button>
+              </>
             )}
             {opsState.activeHazard.type === 'solar-flare' && (
-              <>
-                <button
-                  type="button"
-                  onClick={() =>
-                    onUpdateOpsState((p) => ({ ...p, shieldAngleDeg: p.sunAngleDeg }))
-                  }
-                  className="bg-amber-500 hover:bg-amber-400 text-slate-950 px-3 py-2 font-mono-tab text-xs font-bold uppercase cursor-pointer"
-                >
-                  Slew Shield to Sun ({opsState.sunAngleDeg}°)
-                </button>
-                <button
-                  type="button"
-                  onClick={onShedHeavyPayloads}
-                  className="border border-cyan-400 bg-cyan-950/50 text-cyan-200 hover:bg-cyan-900/60 px-3 py-2 font-mono-tab text-xs font-bold uppercase cursor-pointer"
-                >
-                  Shed Payloads
-                </button>
-              </>
+              <button
+                type="button"
+                onClick={handleFlipShield}
+                className="bg-amber-400 hover:bg-amber-300 text-slate-950 px-5 py-2.5 text-xs font-black cursor-pointer flex items-center gap-1.5"
+              >
+                <ShieldAlert className="h-4 w-4" />
+                <span>FLIP HEAT SHIELD!</span>
+              </button>
             )}
             {opsState.activeHazard.type === 'eclipse-drain' && (
-              <>
-                <button
-                  type="button"
-                  onClick={onShedHeavyPayloads}
-                  className="bg-amber-500 hover:bg-amber-400 text-slate-950 px-3 py-2 font-mono-tab text-xs font-bold uppercase cursor-pointer"
-                >
-                  Shed Power Load
-                </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    onUpdateOpsState((p) => ({ ...p, solarPanelAngleDeg: p.sunAngleDeg }))
-                  }
-                  className="border border-cyan-400 bg-cyan-950/50 text-cyan-200 hover:bg-cyan-900/60 px-3 py-2 font-mono-tab text-xs font-bold uppercase cursor-pointer"
-                >
-                  Track Solar Panels ({opsState.sunAngleDeg}°)
-                </button>
-              </>
+              <button
+                type="button"
+                onClick={onShedHeavyPayloads}
+                className="bg-amber-400 hover:bg-amber-300 text-slate-950 px-5 py-2.5 text-xs font-black cursor-pointer"
+              >
+                POWER SAVER MODE!
+              </button>
             )}
           </div>
         </div>
       )}
 
-      {/* Main Grid: Dual Tactical / 3D Viewport (Left 7 cols) & Action Cockpit (Right 5 cols) */}
+      {/* Main Split: Space Arena Canvas (7 cols) + Action Controls (5 cols) */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-        <div className="lg:col-span-7 flex flex-col border border-slate-800 bg-slate-950 relative overflow-hidden min-h-[540px]">
-          {/* Top Switcher Bar */}
-          <div className="z-10 flex flex-wrap items-center justify-between gap-2 p-2.5 border-b border-slate-800 bg-[#070c18]">
-            <div className="flex items-center gap-1 border border-slate-800 bg-slate-900 p-0.5 font-mono-tab text-[11px]">
+        {/* Left: Space Canvas + Instant Snapshot Pop-Up */}
+        <div className="lg:col-span-7 border border-slate-800 bg-[#040814] flex flex-col relative overflow-hidden min-h-[480px]">
+          <div className="flex items-center justify-between gap-2 p-2.5 border-b border-slate-800 bg-[#080d19]">
+            <div className="flex items-center gap-1">
               <button
                 type="button"
-                onClick={() => setViewportMode('tactical-2d')}
-                className={`px-2.5 py-1 font-bold cursor-pointer ${
-                  viewportMode === 'tactical-2d' ? 'bg-cyan-500 text-slate-950' : 'text-slate-300 hover:text-white'
+                onClick={() => setViewportMode('arcade-2d')}
+                className={`px-3 py-1.5 text-xs font-bold cursor-pointer ${
+                  viewportMode === 'arcade-2d' ? 'bg-cyan-500 text-slate-950' : 'text-slate-300 hover:text-white'
                 }`}
               >
-                2D GMAT Maneuver Node Canvas
+                2D Slingshot Arena
               </button>
               <button
                 type="button"
                 onClick={() => setViewportMode('orbital-3d')}
-                className={`px-2.5 py-1 font-bold cursor-pointer ${
+                className={`px-3 py-1.5 text-xs font-bold cursor-pointer ${
                   viewportMode === 'orbital-3d' ? 'bg-cyan-500 text-slate-950' : 'text-slate-300 hover:text-white'
                 }`}
               >
-                3D Orbital Spacecraft View
+                3D Planet View
               </button>
             </div>
 
-            {viewportMode === 'orbital-3d' ? (
-              <div className="flex items-center gap-1 font-mono-tab text-[10px]">
-                {(['hero', 'satellite', 'earth-view', 'ground-station'] as const).map((preset) => (
-                  <button
-                    key={preset}
-                    type="button"
-                    onClick={() => setCameraPreset(preset)}
-                    className={`px-2 py-1 uppercase border cursor-pointer ${
-                      cameraPreset === preset
-                        ? 'border-cyan-400 bg-cyan-500 text-slate-950 font-bold'
-                        : 'border-slate-700 bg-slate-900 text-slate-300 hover:text-white'
-                    }`}
-                  >
-                    {preset === 'earth-view' ? 'Polar' : preset === 'ground-station' ? 'Station' : preset}
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <span className="font-mono-tab text-[10px] text-amber-300">
-                {body.name} · Pe {orbitState.periapsisKm}km / Ap {orbitState.apoapsisKm}km · e={orbitState.eccentricity}
-              </span>
-            )}
+            <div className="text-xs font-bold text-emerald-300">
+              Snapshots: {capturedCount}/{landmarks.length}
+            </div>
           </div>
 
-          {/* Active Viewport */}
-          <div className="flex-1 relative flex items-center justify-center bg-[#040814]">
-            {viewportMode === 'tactical-2d' ? (
+          <div className="flex-1 relative flex items-center justify-center">
+            {viewportMode === 'arcade-2d' ? (
               <canvas
-                ref={tacticalCanvasRef}
+                ref={arenaCanvasRef}
                 width={580}
                 height={430}
-                onPointerDown={handleTacticalPointerDown}
-                onPointerMove={handleTacticalPointerMove}
-                onPointerUp={handleTacticalPointerUp}
-                onPointerLeave={handleTacticalPointerUp}
-                className="w-full h-full max-h-[450px] object-contain cursor-crosshair block"
+                onPointerDown={(e) => {
+                  dragSlingshotRef.current = true;
+                  updateSlingshotFromPointer(e);
+                }}
+                onPointerMove={(e) => {
+                  if (dragSlingshotRef.current) updateSlingshotFromPointer(e);
+                }}
+                onPointerUp={() => {
+                  dragSlingshotRef.current = false;
+                }}
+                onPointerLeave={() => {
+                  dragSlingshotRef.current = false;
+                }}
+                className="w-full h-full max-h-[430px] object-contain cursor-crosshair block touch-none"
               />
             ) : (
               <NasaOrbitalScene
@@ -841,591 +777,340 @@ export function SpaceSegment({
                 hasLineOfSight={hasLineOfSight}
                 activeStationId={activeStationId}
                 activeInstrumentsCount={activeInstruments.length}
-                isBurning={isBurningEffect}
-                cameraPreset={cameraPreset}
+                isBurning={burnFlash}
+                cameraPreset="hero"
                 predictedOrbit={{
                   altitudeKm: predicted.predictedAltKm,
                   eccentricity: predicted.predictedEcc,
                   inclinationDeg: predicted.predictedIncDeg,
                 }}
-                maneuverNodeAnomalyDeg={maneuverNode.trueAnomalyDeg}
+                maneuverNodeAnomalyDeg={slingshotAngleDeg}
                 solarPanelAngleDeg={opsState.solarPanelAngleDeg}
                 radiationAlert={opsState.activeHazard?.type === 'solar-flare'}
                 debrisAlert={opsState.activeHazard?.type === 'debris'}
-                radarPulseActive={radarPulseActive}
+                radarPulseActive={scanFlash}
               />
+            )}
+
+            {/* Instant Illustrated Discovery Snapshot Pop-up */}
+            {snapshotPopup && (
+              <div className="absolute bottom-3 left-3 right-3 sm:right-auto sm:w-[320px] z-20 border-2 border-emerald-400 bg-[#080d19]/98 p-3 shadow-2xl">
+                <div className="flex items-start gap-3">
+                  <img
+                    src={snapshotPopup.artUrl}
+                    alt={snapshotPopup.title}
+                    referrerPolicy="no-referrer"
+                    className="w-20 h-16 object-cover border border-emerald-400/50 shrink-0"
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="text-[10px] font-black uppercase text-emerald-300">
+                        SNAPSHOT COLLECTED! ★★★
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setSnapshotPopup(null)}
+                        aria-label="Close snapshot preview"
+                        className="text-slate-400 hover:text-white cursor-pointer"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                    <div className="font-display text-sm font-bold text-white truncate">
+                      {snapshotPopup.title}
+                    </div>
+                    <p className="text-[11px] text-slate-300 leading-snug mt-0.5">{snapshotPopup.fact}</p>
+                  </div>
+                </div>
+              </div>
             )}
           </div>
 
-          {/* Bottom Live Bus Status Strip */}
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 p-2.5 border-t border-slate-800 bg-[#070b16] font-mono-tab text-[10px]">
-            <div>
-              <span className="text-slate-500 block">BATTERY SoC</span>
-              <strong className={opsState.batteryPct < 25 ? 'text-rose-400' : 'text-emerald-400'}>
-                {opsState.batteryPct.toFixed(0)}% ({powerMarginW >= 0 ? `+${powerMarginW}W` : `${powerMarginW}W`})
-              </strong>
+          {/* Friendly Bottom Status Strip */}
+          <div className="grid grid-cols-3 gap-2 border-t border-slate-800 bg-[#080d19] p-3 text-xs font-bold">
+            <div className="flex items-center gap-2">
+              <BatteryCharging className="h-4 w-4 text-emerald-400" />
+              <span className="text-slate-300">Battery:</span>
+              <span className="text-emerald-300">{Math.round(opsState.batteryPct)}%</span>
             </div>
-            <div>
-              <span className="text-slate-500 block">HULL INTEGRITY</span>
-              <strong className={opsState.hullIntegrityPct < 60 ? 'text-rose-400' : 'text-cyan-300'}>
-                {opsState.hullIntegrityPct.toFixed(0)}%
-              </strong>
+            <div className="flex items-center gap-2">
+              <Shield className="h-4 w-4 text-cyan-400" />
+              <span className="text-slate-300">Craft Health:</span>
+              <span className="text-cyan-300">{Math.round(opsState.hullIntegrityPct)}%</span>
             </div>
-            <div>
-              <span className="text-slate-500 block">RADIATION DOSE</span>
-              <strong className={opsState.radiationDosePct > 55 ? 'text-rose-400' : 'text-amber-300'}>
-                {opsState.radiationDosePct.toFixed(0)}%
-              </strong>
-            </div>
-            <div>
-              <span className="text-slate-500 block">PROPELLANT LEFT</span>
-              <strong className="text-white">{propellantBudgetKg} kg</strong>
-            </div>
-            <div>
-              <span className="text-slate-500 block">J2 PRECESSION</span>
-              <strong className="text-amber-300">{orbitState.perturbations.j2NodalPrecessionDegPerDay}°/d</strong>
+            <div className="flex items-center gap-2">
+              <Flame className="h-4 w-4 text-amber-400" />
+              <span className="text-slate-300">Fuel:</span>
+              <span className="text-amber-300">{fuelPct}%</span>
             </div>
           </div>
         </div>
 
-        {/* Right 5 Cols: Interactive Flight Tabs */}
+        {/* Right: 3 Clean Action Tabs */}
         <div className="lg:col-span-5 space-y-3">
-          {/* Quick Ops Score Bar */}
-          <div className="border border-slate-800 bg-[#080d19] px-3 py-2 flex flex-wrap items-center justify-between gap-2 font-mono-tab text-[11px]">
-            <span className="text-cyan-300">
-              Hazards Survived: <strong className="text-emerald-400">{opsState.hazardsSurvived}</strong>
-              {' · '}Arm Ops: <strong className="text-amber-300">{opsState.canadarm.completedCount}</strong>
-            </span>
-            <span className="text-slate-300">
-              Targets: <strong className="text-cyan-300">{landmarks.filter((l) => l.captured).length}/{landmarks.length}</strong>
-            </span>
-          </div>
-
-          <div className="grid grid-cols-4 border-b border-slate-800 bg-[#080d19]">
+          <div className="grid grid-cols-3 gap-1 border border-slate-800 bg-[#080d19] p-1">
             <button
               type="button"
-              onClick={() => setActiveTab('maneuvers')}
-              className={`py-2 px-1 text-center text-[11px] font-mono-tab font-bold cursor-pointer ${
-                activeTab === 'maneuvers'
-                  ? 'border-b-2 border-cyan-400 bg-cyan-950/30 text-cyan-300'
-                  : 'text-slate-400 hover:text-white'
+              onClick={() => setActiveTab('slingshot')}
+              className={`py-2 text-xs font-black cursor-pointer ${
+                activeTab === 'slingshot' ? 'bg-cyan-500 text-slate-950' : 'text-slate-300 hover:text-white'
               }`}
             >
-              Maneuvers
+              Orbit &amp; Snap
             </button>
             <button
               type="button"
               onClick={() => setActiveTab('canadarm')}
-              className={`py-2 px-1 text-center text-[11px] font-mono-tab font-bold cursor-pointer ${
-                activeTab === 'canadarm'
-                  ? 'border-b-2 border-amber-400 bg-amber-950/30 text-amber-300'
-                  : 'text-slate-400 hover:text-white'
+              className={`py-2 text-xs font-black cursor-pointer ${
+                activeTab === 'canadarm' ? 'bg-amber-400 text-slate-950' : 'text-slate-300 hover:text-white'
               }`}
             >
-              Canadarm3
+              Canadarm Claw ({opsState.canadarm.completedCount})
             </button>
             <button
               type="button"
-              onClick={() => setActiveTab('targeting')}
-              className={`py-2 px-1 text-center text-[11px] font-mono-tab font-bold cursor-pointer ${
-                activeTab === 'targeting'
-                  ? 'border-b-2 border-emerald-400 bg-emerald-950/30 text-emerald-300'
-                  : 'text-slate-400 hover:text-white'
+              onClick={() => setActiveTab('craft')}
+              className={`py-2 text-xs font-black cursor-pointer ${
+                activeTab === 'craft' ? 'bg-emerald-400 text-slate-950' : 'text-slate-300 hover:text-white'
               }`}
             >
-              Targeting
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab('tradeoff')}
-              className={`py-2 px-1 text-center text-[11px] font-mono-tab font-bold cursor-pointer ${
-                activeTab === 'tradeoff'
-                  ? 'border-b-2 border-cyan-400 bg-cyan-950/30 text-cyan-300'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              Trade-Offs
+              Gadgets &amp; Solar
             </button>
           </div>
 
-          {/* TAB 1: Interactive Maneuver Nodes + Attitude/Power/Shield Controls */}
-          {activeTab === 'maneuvers' && (
-            <div className="space-y-3">
-              {/* Maneuver Node Controller */}
-              <div className="border border-slate-800 bg-[#080d19] p-4 space-y-3 font-mono-tab">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Flame className="h-4 w-4 text-amber-400" />
-                    <h3 className="font-display text-xs font-bold uppercase tracking-wider text-white">
-                      GMAT Node MN-1 @ {maneuverNode.trueAnomalyDeg}° Anomaly
-                    </h3>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => onWarpToAnomaly((maneuverNode.trueAnomalyDeg - 8 + 360) % 360)}
-                    className="flex items-center gap-1 border border-cyan-500/40 bg-cyan-950/40 px-2 py-1 text-[10px] font-bold text-cyan-300 hover:bg-cyan-900/50 cursor-pointer"
-                  >
-                    <FastForward className="h-3 w-3" />
-                    Warp to Burn Window
-                  </button>
-                </div>
-
-                {/* Predicted Orbit Preview Box */}
-                <div className="grid grid-cols-4 gap-1.5 border border-amber-500/30 bg-amber-950/15 p-2 text-[10px]">
-                  <div>
-                    <span className="text-slate-400 block">PRED Pe</span>
-                    <strong className="text-amber-300">{predicted.predictedPeKm} km</strong>
-                  </div>
-                  <div>
-                    <span className="text-slate-400 block">PRED Ap</span>
-                    <strong className="text-amber-300">{predicted.predictedApKm} km</strong>
-                  </div>
-                  <div>
-                    <span className="text-slate-400 block">PRED Inc</span>
-                    <strong className="text-cyan-300">{predicted.predictedIncDeg}°</strong>
-                  </div>
-                  <div>
-                    <span className="text-slate-400 block">PRED Ecc</span>
-                    <strong className="text-white">{predicted.predictedEcc}</strong>
-                  </div>
-                </div>
-
-                <div className="space-y-1.5">
-                  <div className="flex justify-between text-xs">
-                    <span className="text-slate-300">Prograde / Retrograde (Δv_v)</span>
-                    <strong className={maneuverNode.progradeMs >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
-                      {maneuverNode.progradeMs >= 0 ? `+${maneuverNode.progradeMs}` : maneuverNode.progradeMs} m/s
-                    </strong>
-                  </div>
-                  <input
-                    type="range"
-                    min={-400}
-                    max={600}
-                    step={10}
-                    value={maneuverNode.progradeMs}
-                    onChange={(e) =>
-                      setManeuverNode((p) => ({ ...p, progradeMs: parseInt(e.target.value, 10), executed: false }))
-                    }
-                    aria-label="Node Prograde Delta-v"
-                    className="w-full accent-amber-400 h-1.5 bg-slate-800 cursor-pointer"
-                  />
-                </div>
-
-                <div className="space-y-1.5">
-                  <div className="flex justify-between text-xs">
-                    <span className="text-slate-300">Normal Plane Change (Δv_n)</span>
-                    <strong className="text-cyan-300">
-                      {maneuverNode.normalMs >= 0 ? `+${maneuverNode.normalMs}` : maneuverNode.normalMs} m/s
-                    </strong>
-                  </div>
-                  <input
-                    type="range"
-                    min={-300}
-                    max={300}
-                    step={15}
-                    value={maneuverNode.normalMs}
-                    onChange={(e) =>
-                      setManeuverNode((p) => ({ ...p, normalMs: parseInt(e.target.value, 10), executed: false }))
-                    }
-                    aria-label="Node Normal Delta-v"
-                    className="w-full accent-cyan-400 h-1.5 bg-slate-800 cursor-pointer"
-                  />
-                </div>
-
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={handleExecuteNodeBurn}
-                    className={`py-2 px-3 flex items-center justify-center gap-1.5 text-xs font-bold uppercase cursor-pointer ${
-                      isBurnWindowActive
-                        ? 'bg-emerald-400 hover:bg-emerald-300 text-slate-950 shadow-lg shadow-emerald-500/20'
-                        : 'bg-amber-500 hover:bg-amber-400 text-slate-950'
-                    }`}
-                  >
-                    <Flame className="h-3.5 w-3.5" />
-                    <span>{isBurnWindowActive ? 'Execute IN WINDOW!' : 'Fire Burn Now'}</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => onUpdateOrbitParams(orbitState.altitudeKm, 0.0, orbitState.inclinationDeg)}
-                    className="border border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-200 py-2 px-3 text-xs font-bold uppercase cursor-pointer"
-                  >
-                    Circularize (e=0)
-                  </button>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() =>
-                    onApplyManeuverBurn({ progradeMs: hohmannPlan.deltaV1Ms, normalMs: 0, radialMs: 0 }, 95)
-                  }
-                  className="w-full border border-cyan-500/40 bg-cyan-950/30 hover:bg-cyan-950/60 py-1.5 px-3 text-[11px] font-bold text-cyan-300 cursor-pointer"
-                >
-                  GMAT Hohmann Transfer to {hohmannTargetAlt} km (Δv₁: {hohmannPlan.deltaV1Ms} m/s)
-                </button>
-              </div>
-
-              {/* Attitude: Solar Panel Alignment, Radiation Shield & Battery Controls */}
-              <div className="border border-slate-800 bg-[#080d19] p-4 space-y-3 font-mono-tab">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Sun className="h-4 w-4 text-amber-400" />
-                    <h3 className="font-display text-xs font-bold uppercase tracking-wider text-white">
-                      Attitude, Solar Arrays &amp; Radiation Shield
-                    </h3>
-                  </div>
-                  <span className="text-[10px] text-amber-300">Sun Vector: {opsState.sunAngleDeg}°</span>
-                </div>
-
-                {/* Solar Panel Orientation */}
-                <div className="space-y-1">
-                  <div className="flex justify-between text-xs">
-                    <span className="text-slate-300">Solar Wing Slew Angle</span>
-                    <strong className={solarErrorDeg <= 20 ? 'text-emerald-400' : 'text-amber-300'}>
-                      {opsState.solarPanelAngleDeg}° ({Math.round(solarEfficiency * 100)}% Eff)
-                    </strong>
-                  </div>
-                  <input
-                    type="range"
-                    min={-180}
-                    max={180}
-                    step={5}
-                    value={opsState.solarPanelAngleDeg}
-                    onChange={(e) => {
-                      const val = parseInt(e.target.value, 10);
-                      onUpdateOpsState((p) => ({ ...p, solarPanelAngleDeg: val }));
-                    }}
-                    aria-label="Solar Wing Slew Angle"
-                    className="w-full accent-cyan-400 h-1.5 bg-slate-800 cursor-pointer"
-                  />
-                </div>
-
-                {/* Radiation Shield Orientation */}
-                <div className="space-y-1">
-                  <div className="flex justify-between text-xs">
-                    <span className="text-slate-300">Radiation Shield Facing</span>
-                    <strong className={shieldErrorDeg <= 22 ? 'text-emerald-400' : 'text-rose-300'}>
-                      {opsState.shieldAngleDeg}° (Err {shieldErrorDeg.toFixed(0)}°)
-                    </strong>
-                  </div>
-                  <input
-                    type="range"
-                    min={-180}
-                    max={180}
-                    step={5}
-                    value={opsState.shieldAngleDeg}
-                    onChange={(e) => {
-                      const val = parseInt(e.target.value, 10);
-                      onUpdateOpsState((p) => ({ ...p, shieldAngleDeg: val }));
-                    }}
-                    aria-label="Radiation Shield Facing"
-                    className="w-full accent-amber-400 h-1.5 bg-slate-800 cursor-pointer"
-                  />
-                </div>
-
-                <div className="flex items-center justify-between gap-2 pt-1">
-                  <div className="flex items-center gap-1.5 text-[11px]">
-                    <BatteryCharging className="h-4 w-4 text-emerald-400" />
-                    <span className="text-slate-300">
-                      Gen {totalPowerGenW}W vs Draw {totalPowerDrawW}W
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={onShedHeavyPayloads}
-                    className="border border-slate-700 bg-slate-800 hover:bg-slate-700 px-2.5 py-1 text-[10px] font-bold text-amber-300 cursor-pointer"
-                  >
-                    Emergency Load Shed
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* TAB 2: CSA Canadarm3 Robotic Operations Mini-Game */}
-          {activeTab === 'canadarm' && (
-            <div className="border border-slate-800 bg-[#080d19] p-4 space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Wrench className="h-4 w-4 text-amber-400" />
-                  <h3 className="font-display text-xs font-bold uppercase tracking-wider text-white">
-                    CSA Canadarm3 Servicing &amp; Grapple Bay
-                  </h3>
-                </div>
-                <span className="font-mono-tab text-[10px] text-cyan-300">
-                  Completed: <strong>{opsState.canadarm.completedCount}</strong>
-                </span>
-              </div>
-
-              <div className="border border-slate-800 bg-slate-950 overflow-hidden">
-                <canvas
-                  ref={armCanvasRef}
-                  width={440}
-                  height={250}
-                  className="w-full h-auto block"
-                />
-              </div>
-
-              {opsState.canadarm.lastOpFeedback && (
-                <div className="border border-cyan-500/40 bg-cyan-950/25 p-2 text-[11px] text-cyan-200 font-mono-tab">
-                  {opsState.canadarm.lastOpFeedback}
-                </div>
-              )}
-
-              {/* Joint Controls */}
-              <div className="space-y-2 font-mono-tab text-xs">
-                <div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-300">1. Shoulder Joint (Q/E)</span>
-                    <strong className="text-cyan-300">{opsState.canadarm.shoulderDeg}°</strong>
-                  </div>
-                  <input
-                    type="range"
-                    min={25}
-                    max={155}
-                    step={2}
-                    value={opsState.canadarm.shoulderDeg}
-                    onChange={(e) => {
-                      const val = parseInt(e.target.value, 10);
-                      onUpdateOpsState((p) => ({ ...p, canadarm: { ...p.canadarm, shoulderDeg: val } }));
-                    }}
-                    aria-label="Shoulder Joint"
-                    className="w-full accent-cyan-400 h-1.5 bg-slate-800 cursor-pointer"
-                  />
-                </div>
-
-                <div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-300">2. Elbow Joint (W/S)</span>
-                    <strong className="text-amber-300">{opsState.canadarm.elbowDeg}°</strong>
-                  </div>
-                  <input
-                    type="range"
-                    min={-120}
-                    max={120}
-                    step={2}
-                    value={opsState.canadarm.elbowDeg}
-                    onChange={(e) => {
-                      const val = parseInt(e.target.value, 10);
-                      onUpdateOpsState((p) => ({ ...p, canadarm: { ...p.canadarm, elbowDeg: val } }));
-                    }}
-                    aria-label="Elbow Joint"
-                    className="w-full accent-amber-400 h-1.5 bg-slate-800 cursor-pointer"
-                  />
-                </div>
-
-                <div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-300">3. Wrist / End-Effector (A/D)</span>
-                    <strong className="text-emerald-300">{opsState.canadarm.wristDeg}°</strong>
-                  </div>
-                  <input
-                    type="range"
-                    min={-90}
-                    max={90}
-                    step={2}
-                    value={opsState.canadarm.wristDeg}
-                    onChange={(e) => {
-                      const val = parseInt(e.target.value, 10);
-                      onUpdateOpsState((p) => ({ ...p, canadarm: { ...p.canadarm, wristDeg: val } }));
-                    }}
-                    aria-label="Wrist Joint"
-                    className="w-full accent-emerald-400 h-1.5 bg-slate-800 cursor-pointer"
-                  />
-                </div>
-              </div>
-
+          {toastTip && (
+            <div className="border border-cyan-400/50 bg-cyan-950/40 px-3 py-2 text-xs font-bold text-cyan-200 flex items-center justify-between gap-2">
+              <span>{toastTip}</span>
               <button
                 type="button"
-                onClick={onResolveCanadarmCapture}
-                className={`w-full py-2.5 px-4 font-mono-tab text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${
-                  armInGrappleZone
-                    ? 'bg-emerald-400 hover:bg-emerald-300 text-slate-950 shadow-lg shadow-emerald-500/20'
-                    : 'border border-amber-500/50 bg-amber-950/40 text-amber-300 hover:bg-amber-950/70'
-                }`}
+                onClick={() => setToastTip(null)}
+                className="text-cyan-300 hover:text-white cursor-pointer"
               >
-                {armInGrappleZone
-                  ? '✔ ALIGNED — GRAPPLE & LOCK TARGET (SPACE)'
-                  : `Move End-Effector Closer (${(armDistToTarget * 10).toFixed(1)}m away)`}
+                <X className="h-3.5 w-3.5" />
               </button>
             </div>
           )}
 
-          {/* TAB 3: Active Surface Target Scanner & Payload Rack */}
-          {activeTab === 'targeting' && (
-            <div className="border border-slate-800 bg-[#080d19] p-4 space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Crosshair className="h-4 w-4 text-emerald-400" />
-                  <h3 className="font-display text-xs font-bold uppercase tracking-wider text-white">
-                    Active Surface Landmark Scanner
-                  </h3>
-                </div>
-                <span className="font-mono-tab text-[10px] text-cyan-300">
-                  Slew: {opsState.sensorSlewOffsetDeg}°
-                </span>
-              </div>
-
-              {/* Sensor Gimbal Slew Control */}
-              <div className="border border-slate-800 bg-slate-900/50 p-2.5 space-y-1 font-mono-tab text-xs">
-                <div className="flex justify-between">
-                  <span className="text-slate-300">Instrument Gimbal Cross-Track Slew</span>
-                  <strong className="text-emerald-300">{opsState.sensorSlewOffsetDeg}°</strong>
+          {/* TAB 1: Slingshot + Photo Snap */}
+          {activeTab === 'slingshot' && (
+            <div className="border border-slate-800 bg-[#080d19] p-4 space-y-4">
+              {/* Slingshot Box */}
+              <div className="space-y-2.5 border-b border-slate-800 pb-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-display text-sm font-black text-white">1. Slingshot Orbit Path</h3>
+                  <span className="text-xs font-bold text-amber-300">
+                    {slingshotBoostMs >= 0 ? 'Boost Wider' : 'Shrink Closer'}
+                  </span>
                 </div>
                 <input
                   type="range"
-                  min={-30}
-                  max={30}
-                  step={2}
-                  value={opsState.sensorSlewOffsetDeg}
-                  onChange={(e) => {
-                    const val = parseInt(e.target.value, 10);
-                    onUpdateOpsState((p) => ({ ...p, sensorSlewOffsetDeg: val }));
-                  }}
-                  aria-label="Instrument Gimbal Slew"
-                  className="w-full accent-emerald-400 h-1.5 bg-slate-800 cursor-pointer"
+                  min={-220}
+                  max={420}
+                  step={10}
+                  value={slingshotBoostMs}
+                  onChange={(e) => setSlingshotBoostMs(parseInt(e.target.value, 10))}
+                  aria-label="Slingshot Boost Power"
+                  className="w-full accent-amber-400 h-2 bg-slate-800 cursor-pointer"
                 />
+                <button
+                  type="button"
+                  onClick={handleFireSlingshot}
+                  className="w-full bg-amber-400 hover:bg-amber-300 text-slate-950 py-2.5 px-4 text-xs font-black uppercase tracking-wide flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <Flame className="h-4 w-4" />
+                  <span>FIRE THRUSTERS ALONG PATH!</span>
+                </button>
               </div>
 
-              {scanFeedback && (
-                <div className="border border-emerald-500/40 bg-emerald-950/25 p-2 text-[11px] text-emerald-200 font-mono-tab">
-                  {scanFeedback}
+              {/* Target Snap List */}
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-display text-sm font-black text-white">2. Snap Planet Discoveries</h3>
+                  <button
+                    type="button"
+                    onClick={() => handleSnapTarget()}
+                    className="bg-emerald-400 hover:bg-emerald-300 text-slate-950 px-3 py-1.5 text-xs font-black flex items-center gap-1 cursor-pointer"
+                  >
+                    <Camera className="h-3.5 w-3.5" />
+                    <span>SNAP NEXT!</span>
+                  </button>
                 </div>
-              )}
 
-              {/* Target Landmarks List */}
-              <div className="space-y-2 max-h-[225px] overflow-y-auto pr-1">
-                {landmarks.map((lm) => {
-                  const dLat = Math.abs(lm.latDeg - (orbitState.subSatLatDeg + opsState.sensorSlewOffsetDeg));
-                  const dLon = Math.min(
-                    Math.abs(lm.lonDeg - orbitState.subSatLonDeg),
-                    360 - Math.abs(lm.lonDeg - orbitState.subSatLonDeg),
-                  );
-                  const angDist = Math.round(Math.hypot(dLat, dLon));
-                  const inWindow = angDist <= 42;
-                  const instPowered = instruments.some((i) => i.id === lm.requiredInstrument && i.enabled);
-
-                  return (
-                    <div
-                      key={lm.id}
-                      className={`border p-2.5 font-mono-tab text-[11px] flex items-center justify-between gap-2 ${
-                        lm.captured
-                          ? 'border-emerald-500/40 bg-emerald-950/20'
-                          : inWindow
-                          ? 'border-cyan-400 bg-cyan-950/30'
-                          : 'border-slate-800 bg-slate-900/40'
-                      }`}
-                    >
-                      <div>
-                        <div className="font-display text-xs font-bold text-white">{lm.name}</div>
-                        <div className="text-[10px] text-slate-400">
-                          {lm.category} · Req: <strong className={instPowered ? 'text-emerald-300' : 'text-rose-400'}>{lm.requiredInstrument}</strong>
-                          {' · '}Range: {angDist}°
-                        </div>
-                      </div>
-
-                      {lm.captured ? (
-                        <span className="flex items-center gap-1 text-emerald-400 font-bold text-[10px] shrink-0">
-                          <CheckCircle2 className="h-3.5 w-3.5" />
-                          {lm.downlinked ? 'DOWNLINKED' : 'IN SSR'}
-                        </span>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => handleFireScan(lm.id)}
-                          disabled={!instPowered}
-                          className={`px-2.5 py-1.5 text-[10px] font-bold uppercase shrink-0 cursor-pointer ${
-                            !instPowered
-                              ? 'bg-slate-800 text-slate-500 cursor-not-allowed'
-                              : inWindow
-                              ? 'bg-emerald-400 hover:bg-emerald-300 text-slate-950'
-                              : 'border border-cyan-500/50 bg-cyan-950/50 text-cyan-300 hover:bg-cyan-900/60'
-                          }`}
-                        >
-                          <span className="flex items-center gap-1">
-                            <Radar className="h-3 w-3" />
-                            {inWindow ? 'FIRE SCAN!' : 'Slew & Fire'}
-                          </span>
-                        </button>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/* Quick Instrument Power Rack */}
-              <div className="pt-2 border-t border-slate-800 space-y-1.5">
-                <div className="flex items-center justify-between font-mono-tab text-[10px] text-slate-400">
-                  <span className="flex items-center gap-1">
-                    <Cpu className="h-3 w-3 text-cyan-400" />
-                    PAYLOAD POWER BUS ({activeInstruments.length}/{instruments.length} ON)
-                  </span>
-                  <span className={powerMarginW >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
-                    Margin: {powerMarginW >= 0 ? `+${powerMarginW}W` : `${powerMarginW}W`}
-                  </span>
-                </div>
-                <div className="grid grid-cols-1 gap-1.5 max-h-[155px] overflow-y-auto pr-1">
-                  {instruments.map((inst) => (
-                    <div
-                      key={inst.id}
-                      className="border border-slate-800 bg-slate-900/50 px-2.5 py-1.5 flex items-center justify-between gap-2 font-mono-tab text-[10px]"
-                    >
-                      <div>
-                        <strong className="text-white">{inst.acronym}</strong>{' '}
-                        <span className="text-slate-400">({inst.powerDrawW}W · {inst.dataRateMbps} Mbps)</span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => onToggleInstrument(inst.id)}
-                        className={`px-2 py-0.5 font-bold uppercase cursor-pointer ${
-                          inst.enabled ? 'bg-emerald-500 text-slate-950' : 'bg-slate-800 text-slate-400 hover:text-white'
+                <div className="space-y-2 max-h-[245px] overflow-y-auto pr-1">
+                  {landmarks.map((lm) => {
+                    const info = getFriendlyLandmarkFact(lm);
+                    return (
+                      <div
+                        key={lm.id}
+                        className={`border p-2.5 flex items-center justify-between gap-2 ${
+                          lm.captured
+                            ? 'border-emerald-500/50 bg-emerald-950/25'
+                            : 'border-slate-800 bg-slate-900/60'
                         }`}
                       >
-                        {inst.enabled ? 'ON' : 'OFF'}
-                      </button>
-                    </div>
-                  ))}
+                        <div className="min-w-0">
+                          <div className="font-display text-xs font-bold text-white truncate">
+                            {info.shortName}
+                          </div>
+                          <div className="text-[11px] text-slate-400 truncate">
+                            {lm.captured ? 'Saved for Download ✓' : 'Waiting for Photo Snap!'}
+                          </div>
+                        </div>
+
+                        {lm.captured ? (
+                          <span className="flex items-center gap-1 text-emerald-400 text-xs font-black shrink-0">
+                            <CheckCircle2 className="h-4 w-4" />
+                            <span>SNAPPED!</span>
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleSnapTarget(lm.id)}
+                            className="bg-cyan-400 hover:bg-cyan-300 text-slate-950 px-3 py-1.5 text-[11px] font-black shrink-0 cursor-pointer"
+                          >
+                            SNAP PHOTO!
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             </div>
           )}
 
-          {/* TAB 4: Propulsion Trade-Offs */}
-          {activeTab === 'tradeoff' && (
-            <div className="border border-slate-800 bg-[#080d19] p-4 space-y-3 font-mono-tab">
-              <div className="flex items-center gap-2">
-                <Scale className="h-4 w-4 text-cyan-400" />
-                <h3 className="font-display text-xs font-bold uppercase tracking-wider text-white">
-                  Propulsion Architecture Trade-Off ({selectedPropulsion.toUpperCase()} Active)
+          {/* TAB 2: Canadarm Claw Mini-Game */}
+          {activeTab === 'canadarm' && (
+            <div className="border border-slate-800 bg-[#080d19] p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <h3 className="font-display text-sm font-black text-white flex items-center gap-2">
+                  <Wrench className="h-4 w-4 text-amber-400" />
+                  CSA Canadarm3 Supply Catch
                 </h3>
+                <span className="text-xs font-bold text-emerald-300">
+                  Caught: {opsState.canadarm.completedCount}
+                </span>
               </div>
 
-              <div className="space-y-2.5">
-                <div className="border border-amber-500/40 bg-amber-950/20 p-3 space-y-1">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="font-bold text-amber-300">1. Chemical Bipropellant</span>
-                    <span className="text-[10px] text-slate-400">Isp 325s · 450N</span>
-                  </div>
-                  <div className="text-[11px] text-slate-300">
-                    Propellant: <strong className="text-white">{tradeOffScenarios.chemical.propellantMassKg} kg</strong> · Transit: <strong className="text-amber-300">{tradeOffScenarios.chemical.transferDurationDays}d</strong>
-                  </div>
+              <canvas
+                ref={clawCanvasRef}
+                width={380}
+                height={200}
+                className="w-full h-[185px] border border-slate-800 block"
+              />
+
+              {opsState.canadarm.lastOpFeedback && (
+                <div className="border border-cyan-500/40 bg-cyan-950/30 p-2 text-xs text-cyan-200">
+                  {opsState.canadarm.lastOpFeedback}
                 </div>
+              )}
 
-                <div className="border border-cyan-500/40 bg-cyan-950/20 p-3 space-y-1">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="font-bold text-cyan-300">2. Solar Electric Ion</span>
-                    <span className="text-[10px] text-slate-400">Isp 3,100s · 0.25N</span>
-                  </div>
-                  <div className="text-[11px] text-slate-300">
-                    Propellant: <strong className="text-white">{tradeOffScenarios.electric.propellantMassKg} kg</strong> · Payload: <strong className="text-emerald-400">{tradeOffScenarios.electric.payloadCapacityKg} kg (+35%)</strong>
-                  </div>
-                </div>
+              <div className="grid grid-cols-3 gap-2">
+                <div />
+                <button
+                  type="button"
+                  onClick={() => nudgeCanadarm(0, 1)}
+                  className="border border-slate-700 bg-slate-800 py-2 text-xs font-black text-white hover:bg-slate-700 cursor-pointer"
+                >
+                  ▲ UP
+                </button>
+                <div />
+                <button
+                  type="button"
+                  onClick={() => nudgeCanadarm(1, 0)}
+                  className="border border-slate-700 bg-slate-800 py-2 text-xs font-black text-white hover:bg-slate-700 cursor-pointer"
+                >
+                  ◀ LEFT
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onResolveCanadarmCapture();
+                    spawnSparks(290, 215, '#34d399', 22);
+                  }}
+                  className={`py-2 text-xs font-black cursor-pointer ${
+                    clawLockedZone
+                      ? 'bg-emerald-400 text-slate-950 hover:bg-emerald-300'
+                      : 'bg-amber-400 text-slate-950 hover:bg-amber-300'
+                  }`}
+                >
+                  {clawLockedZone ? 'GRAB IT! ✓' : 'GRAB POD'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => nudgeCanadarm(-1, 0)}
+                  className="border border-slate-700 bg-slate-800 py-2 text-xs font-black text-white hover:bg-slate-700 cursor-pointer"
+                >
+                  RIGHT ▶
+                </button>
+                <div />
+                <button
+                  type="button"
+                  onClick={() => nudgeCanadarm(0, -1)}
+                  className="border border-slate-700 bg-slate-800 py-2 text-xs font-black text-white hover:bg-slate-700 cursor-pointer"
+                >
+                  ▼ DOWN
+                </button>
+                <div />
+              </div>
+            </div>
+          )}
+
+          {/* TAB 3: Gadgets & Solar Wings */}
+          {activeTab === 'craft' && (
+            <div className="border border-slate-800 bg-[#080d19] p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <h3 className="font-display text-sm font-black text-white flex items-center gap-2">
+                  <Zap className="h-4 w-4 text-amber-400" />
+                  Solar Wings &amp; Space Gadgets
+                </h3>
+                <button
+                  type="button"
+                  onClick={() =>
+                    onUpdateOpsState((p) => ({
+                      ...p,
+                      solarPanelAngleDeg: p.sunAngleDeg,
+                      shieldAngleDeg: p.sunAngleDeg,
+                    }))
+                  }
+                  className="bg-amber-400 hover:bg-amber-300 text-slate-950 px-3 py-1 text-[11px] font-black cursor-pointer"
+                >
+                  Aim Solar at Sun!
+                </button>
               </div>
 
-              <div className="border border-slate-800 bg-slate-900/50 p-2.5 text-[11px] text-slate-300">
-                CSA Ops Score: <strong className="text-amber-300">{csaChallenges.challengePoints}/90 pts</strong> · Debris Dodged: <strong className="text-emerald-400">{csaChallenges.debrisAvoidedCount}</strong>
+              <div className="space-y-2">
+                {instruments.map((inst) => (
+                  <button
+                    key={inst.id}
+                    type="button"
+                    onClick={() => onToggleInstrument(inst.id)}
+                    className={`w-full border p-2.5 flex items-center justify-between text-left cursor-pointer ${
+                      inst.enabled
+                        ? 'border-emerald-400/70 bg-emerald-950/25'
+                        : 'border-slate-800 bg-slate-900/50'
+                    }`}
+                  >
+                    <span className="text-xs font-bold text-white">{inst.name}</span>
+                    <span
+                      className={`px-2 py-0.5 text-[10px] font-black ${
+                        inst.enabled ? 'bg-emerald-400 text-slate-950' : 'bg-slate-800 text-slate-400'
+                      }`}
+                    >
+                      {inst.enabled ? 'ON' : 'OFF'}
+                    </span>
+                  </button>
+                ))}
               </div>
+
+              <button
+                type="button"
+                onClick={onProceedToGround}
+                className="w-full bg-cyan-500 hover:bg-cyan-400 text-slate-950 py-2.5 text-xs font-black flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <Sparkles className="h-4 w-4" />
+                <span>Ready! Beam Photos to Earth →</span>
+              </button>
             </div>
           )}
         </div>

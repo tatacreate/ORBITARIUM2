@@ -1,17 +1,18 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
+  ArrowLeft,
+  ArrowRight,
+  CheckCircle2,
+  Compass,
+  HardDrive,
   Radio,
+  Send,
   Wifi,
   WifiOff,
-  HardDrive,
-  ArrowRight,
-  Compass,
-  Waves,
-  Crosshair,
-  Sliders,
+  Zap,
 } from 'lucide-react';
 import { audioSynth } from '../../audio/synth';
-import { GROUND_STATIONS, CELESTIAL_BODIES, checkLineOfSight } from '../../engine/orbitalMechanics';
+import { CELESTIAL_BODIES, GROUND_STATIONS, checkLineOfSight } from '../../engine/orbitalMechanics';
 import type {
   GroundCommState,
   NasaObjectiveSpec,
@@ -34,6 +35,59 @@ interface GroundSegmentProps {
   onPrevSegment: () => void;
 }
 
+interface DataPacket {
+  t: number;
+  speed: number;
+  color: string;
+  size: number;
+}
+
+function getFriendlyStationLabel(id: string, fallbackName: string): {
+  shortName: string;
+  flag: string;
+  vibe: string;
+} {
+  const map: Record<string, { shortName: string; flag: string; vibe: string }> = {
+    'dsn-goldstone': {
+      shortName: 'California Desert Dish',
+      flag: 'USA',
+      vibe: 'Giant deep-space dish in the Mojave Desert',
+    },
+    'csa-inuvik': {
+      shortName: 'Arctic Canada Dish',
+      flag: 'CAN',
+      vibe: 'Top North Pole station—catches icy polar orbits every loop!',
+    },
+    'dsn-madrid': {
+      shortName: 'Spain Dish Station',
+      flag: 'ESP',
+      vibe: 'Covers Europe and the Atlantic side of the planet',
+    },
+    'dsn-canberra': {
+      shortName: 'Australia Dish Station',
+      flag: 'AUS',
+      vibe: 'Covers the Southern sky and Pacific Ocean',
+    },
+    'luna-relay': {
+      shortName: 'Moon South Pole Relay',
+      flag: 'MOON',
+      vibe: 'Special lunar dish listening for Moon orbiters',
+    },
+    'mars-relay': {
+      shortName: 'Mars Deep-Space Dish',
+      flag: 'MARS',
+      vibe: 'High-power beam reaching all the way to the Red Planet',
+    },
+  };
+  return (
+    map[id] || {
+      shortName: fallbackName,
+      flag: 'NET',
+      vibe: 'Orbital tracking dish',
+    }
+  );
+}
+
 export function GroundSegment({
   selectedObjective,
   orbitState,
@@ -51,165 +105,362 @@ export function GroundSegment({
   const body = CELESTIAL_BODIES[selectedObjective.targetBody];
   const stations = GROUND_STATIONS;
   const activeStation = stations.find((s) => s.id === groundComm.activeStationId) || stations[0];
+  const activeStationFriendly = getFriendlyStationLabel(activeStation.id, activeStation.name);
 
-  const skyCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const draggingRef = useRef(false);
+  const packetsRef = useRef<DataPacket[]>([
+    { t: 0.15, speed: 0.016, color: '#22d3ee', size: 5 },
+    { t: 0.48, speed: 0.019, color: '#34d399', size: 6 },
+    { t: 0.79, speed: 0.014, color: '#fbbf24', size: 5 },
+  ]);
+  const [burstFlash, setBurstFlash] = useState(0);
+  const [burstBanner, setBurstBanner] = useState<string | null>(null);
 
-  const bufferPct = Math.min(100, (groundComm.bufferStoredGB / groundComm.bufferCapacityGB) * 100);
-  const isBufferOverflowRisk = bufferPct > 85;
+  // Keep fresh state in a ref for smooth 60fps canvas animation
+  const simRef = useRef({
+    groundComm,
+    targetBody: selectedObjective.targetBody,
+    burstFlash,
+    pendingCount: 0,
+  });
+
   const pendingLandmarks = landmarks.filter((l) => l.captured && !l.downlinked).length;
   const downlinkedLandmarks = landmarks.filter((l) => l.downlinked).length;
+  const bufferPct = Math.min(100, (groundComm.bufferStoredGB / groundComm.bufferCapacityGB) * 100);
+  const lockPct = groundComm.hasLineOfSight ? groundComm.dishLockQualityPct : 0;
+  const isStrongLock = groundComm.hasLineOfSight && lockPct >= 65;
 
-  // Render Interactive Polar Sky-Dome Dish Tracker Canvas
+  simRef.current = {
+    groundComm,
+    targetBody: selectedObjective.targetBody,
+    burstFlash,
+    pendingCount: pendingLandmarks,
+  };
+
+  // Fade burst flash gently
   useEffect(() => {
-    const canvas = skyCanvasRef.current;
+    if (burstFlash <= 0) return;
+    const t = window.setInterval(() => {
+      setBurstFlash((v) => Math.max(0, Number((v - 0.06).toFixed(2))));
+    }, 45);
+    return () => clearInterval(t);
+  }, [burstFlash]);
+
+  // 60fps Signal Laser Link Canvas
+  useEffect(() => {
+    const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const w = canvas.width;
-    const h = canvas.height;
-    const cx = w / 2;
-    const cy = h / 2 - 12;
-    const maxR = Math.min(w, h) * 0.4;
+    let rafId = 0;
+    let tick = 0;
 
-    ctx.fillStyle = '#040814';
-    ctx.fillRect(0, 0, w, h);
+    // Deterministic stars
+    const stars = Array.from({ length: 58 }, (_, i) => ({
+      x: ((i * 137.5) % 1) * canvas.width,
+      y: ((i * 73.1) % 1) * (canvas.height * 0.72),
+      r: (i % 3) * 0.7 + 0.8,
+      twinkle: i * 0.7,
+    }));
 
-    // Elevation Rings: 5° horizon, 30°, 60°, Zenith (90°)
-    const elevRings = [
-      { el: 5, label: '5° HORIZON MASK' },
-      { el: 30, label: '30°' },
-      { el: 60, label: '60°' },
-    ];
-    elevRings.forEach((ring, idx) => {
-      const r = maxR * ((90 - ring.el) / 85);
-      ctx.strokeStyle = idx === 0 ? 'rgba(245, 158, 11, 0.45)' : 'rgba(51, 65, 85, 0.65)';
-      ctx.lineWidth = idx === 0 ? 1.5 : 1;
+    const render = () => {
+      tick += 1;
+      const { groundComm: gc, targetBody, burstFlash: flash } = simRef.current;
+      const w = canvas.width;
+      const h = canvas.height;
+
+      // Sky gradient
+      const bg = ctx.createLinearGradient(0, 0, 0, h);
+      bg.addColorStop(0, '#030816');
+      bg.addColorStop(0.68, '#081833');
+      bg.addColorStop(1, '#0b223d');
+      ctx.fillStyle = bg;
+      ctx.fillRect(0, 0, w, h);
+
+      // Stars
+      stars.forEach((s) => {
+        const alpha = 0.35 + 0.5 * Math.sin(tick * 0.04 + s.twinkle);
+        ctx.fillStyle = `rgba(226, 232, 240, ${alpha.toFixed(2)})`;
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      // Satellite position across upper sky arc driven by Azimuth/Elevation
+      const azNorm = Math.sin(((gc.navTelemetry.azimuthDeg % 360) * Math.PI) / 180);
+      const elNorm = Math.max(0.08, Math.min(0.95, gc.navTelemetry.elevationDeg / 90));
+      const satX = w * 0.5 + azNorm * (w * 0.34);
+      const satY = gc.hasLineOfSight ? h * (0.48 - elNorm * 0.32) : h * 0.84;
+
+      // Ground dish base at bottom center
+      const dishX = w * 0.5;
+      const dishY = h - 54;
+
+      // Dish aiming angle derived from player dishAzimuthDeg / dishElevationDeg
+      const playerAzNorm = Math.sin(((gc.dishAzimuthDeg % 360) * Math.PI) / 180);
+      const playerElNorm = Math.max(0.08, Math.min(0.95, gc.dishElevationDeg / 90));
+      const aimTargetX = w * 0.5 + playerAzNorm * (w * 0.34);
+      const aimTargetY = h * (0.48 - playerElNorm * 0.32);
+
+      // Planet Horizon Curve at Bottom
+      const horizonColor =
+        targetBody === 'mars' ? '#7c2d12' : targetBody === 'moon' ? '#334155' : '#065f46';
+      const horizonHighlight =
+        targetBody === 'mars' ? '#fb923c' : targetBody === 'moon' ? '#94a3b8' : '#34d399';
+
+      ctx.fillStyle = horizonColor;
       ctx.beginPath();
-      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.ellipse(w / 2, h + 135, w * 0.72, 185, 0, Math.PI, Math.PI * 2);
+      ctx.fill();
+
+      ctx.strokeStyle = horizonHighlight;
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.ellipse(w / 2, h + 135, w * 0.72, 185, 0, Math.PI * 1.12, Math.PI * 1.88);
       ctx.stroke();
-      ctx.fillStyle = '#64748b';
-      ctx.font = '9px monospace';
-      ctx.fillText(ring.label, cx + 4, cy - r + 10);
-    });
 
-    // Crosshairs N/E/S/W
-    ctx.strokeStyle = 'rgba(51, 65, 85, 0.55)';
-    ctx.beginPath();
-    ctx.moveTo(cx - maxR, cy);
-    ctx.lineTo(cx + maxR, cy);
-    ctx.moveTo(cx, cy - maxR);
-    ctx.lineTo(cx, cy + maxR);
-    ctx.stroke();
+      // Player Dish Beam Cone (Wide = X-Band, Narrow = Ka-Band)
+      const beamSpread = gc.bandMode === 'Ka-Band' ? 28 : 54;
+      const locked = gc.hasLineOfSight && gc.dishLockQualityPct >= 60;
+      const coneGrad = ctx.createLinearGradient(dishX, dishY - 12, aimTargetX, aimTargetY);
+      coneGrad.addColorStop(
+        0,
+        locked ? 'rgba(16, 185, 129, 0.34)' : 'rgba(245, 158, 11, 0.28)',
+      );
+      coneGrad.addColorStop(1, 'rgba(34, 211, 238, 0.04)');
 
-    ctx.fillStyle = '#94a3b8';
-    ctx.font = 'bold 11px monospace';
-    ctx.fillText('N (0°)', cx - 18, cy - maxR - 8);
-    ctx.fillText('S (180°)', cx - 24, cy + maxR + 15);
-    ctx.fillText('E (90°)', cx + maxR + 6, cy + 4);
-    ctx.fillText('W (270°)', cx - maxR - 54, cy + 4);
+      const dx = aimTargetX - dishX;
+      const dy = aimTargetY - (dishY - 12);
+      const len = Math.max(1, Math.hypot(dx, dy));
+      const perpX = (-dy / len) * beamSpread;
+      const perpY = (dx / len) * beamSpread;
 
-    const polarToXY = (azDeg: number, elDeg: number) => {
-      const clampedEl = Math.max(0, Math.min(90, elDeg));
-      const r = maxR * ((90 - clampedEl) / 85);
-      const rad = (azDeg * Math.PI) / 180;
-      return {
-        x: cx + r * Math.sin(rad),
-        y: cy - r * Math.cos(rad),
-      };
+      ctx.fillStyle = coneGrad;
+      ctx.beginPath();
+      ctx.moveTo(dishX, dishY - 12);
+      ctx.lineTo(aimTargetX + perpX, aimTargetY + perpY);
+      ctx.lineTo(aimTargetX - perpX, aimTargetY - perpY);
+      ctx.closePath();
+      ctx.fill();
+
+      // Target Dish Aim Reticle in Sky
+      ctx.strokeStyle = locked ? '#34d399' : '#fbbf24';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([5, 4]);
+      ctx.beginPath();
+      ctx.arc(aimTargetX, aimTargetY, gc.bandMode === 'Ka-Band' ? 22 : 34, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Laser Beam & Flying Data Packets when Line of Sight is Active
+      if (gc.hasLineOfSight) {
+        const beamAlpha = locked ? 0.85 : 0.28;
+        ctx.strokeStyle = locked
+          ? `rgba(34, 211, 238, ${beamAlpha})`
+          : `rgba(251, 191, 36, ${beamAlpha})`;
+        ctx.lineWidth = locked ? 4 + flash * 5 : 2;
+        ctx.beginPath();
+        ctx.moveTo(satX, satY);
+        ctx.lineTo(dishX, dishY - 14);
+        ctx.stroke();
+
+        // Inner bright laser core
+        if (locked) {
+          ctx.strokeStyle = '#ecfeff';
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.moveTo(satX, satY);
+          ctx.lineTo(dishX, dishY - 14);
+          ctx.stroke();
+        }
+
+        // Flying Data Packets from Satellite -> Dish
+        const speedMult = locked ? 1.35 + flash * 1.8 : 0.45;
+        packetsRef.current.forEach((pkt) => {
+          pkt.t = (pkt.t + pkt.speed * speedMult) % 1;
+          const px = satX + (dishX - satX) * pkt.t;
+          const py = satY + (dishY - 14 - satY) * pkt.t;
+
+          ctx.fillStyle = pkt.color;
+          ctx.beginPath();
+          ctx.arc(px, py, pkt.size + (locked ? 1.5 : 0), 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = '#ffffff';
+          ctx.beginPath();
+          ctx.arc(px, py, 2, 0, Math.PI * 2);
+          ctx.fill();
+        });
+      } else {
+        // Planet occlusion warning banner inside sky
+        ctx.fillStyle = 'rgba(244, 63, 94, 0.16)';
+        ctx.fillRect(w * 0.14, h * 0.22, w * 0.72, 44);
+        ctx.strokeStyle = 'rgba(244, 63, 94, 0.55)';
+        ctx.strokeRect(w * 0.14, h * 0.22, w * 0.72, 44);
+        ctx.fillStyle = '#fda4af';
+        ctx.font = 'bold 13px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('Satellite is behind the planet! Pick a CLEAR SKY dish on the right.', w / 2, h * 0.22 + 27);
+        ctx.textAlign = 'left';
+      }
+
+      // Draw Cute Animated Satellite Sprite
+      if (gc.hasLineOfSight) {
+        const bob = Math.sin(tick * 0.06) * 3;
+        const sy = satY + bob;
+
+        // Pulsing beacon halo
+        const haloR = 20 + Math.sin(tick * 0.1) * 4;
+        ctx.fillStyle = locked ? 'rgba(52, 211, 153, 0.22)' : 'rgba(34, 211, 238, 0.24)';
+        ctx.beginPath();
+        ctx.arc(satX, sy, haloR, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Solar Wings
+        ctx.fillStyle = '#0284c7';
+        ctx.strokeStyle = '#7dd3fc';
+        ctx.lineWidth = 1.5;
+        ctx.fillRect(satX - 28, sy - 6, 16, 12);
+        ctx.strokeRect(satX - 28, sy - 6, 16, 12);
+        ctx.fillRect(satX + 12, sy - 6, 16, 12);
+        ctx.strokeRect(satX + 12, sy - 6, 16, 12);
+
+        // Satellite Gold Core
+        ctx.fillStyle = '#fbbf24';
+        ctx.fillRect(satX - 9, sy - 9, 18, 18);
+        ctx.strokeStyle = '#fef3c7';
+        ctx.strokeRect(satX - 9, sy - 9, 18, 18);
+
+        // Label
+        ctx.fillStyle = '#e0f2fe';
+        ctx.font = 'bold 11px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('YOUR SATELLITE', satX, sy - 18);
+        ctx.textAlign = 'left';
+      }
+
+      // Draw Ground Parabolic Dish rotating toward aim point
+      const dishAngle = Math.atan2(aimTargetY - (dishY - 10), aimTargetX - dishX);
+      ctx.save();
+      ctx.translate(dishX, dishY);
+
+      // Pedestal tower
+      ctx.fillStyle = '#94a3b8';
+      ctx.beginPath();
+      ctx.moveTo(-14, 18);
+      ctx.lineTo(14, 18);
+      ctx.lineTo(7, -6);
+      ctx.lineTo(-7, -6);
+      ctx.closePath();
+      ctx.fill();
+
+      // Rotating dish bowl
+      ctx.translate(0, -10);
+      ctx.rotate(dishAngle + Math.PI / 2);
+      ctx.strokeStyle = '#e2e8f0';
+      ctx.fillStyle = '#334155';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(0, 0, 24, Math.PI * 0.12, Math.PI * 0.88);
+      ctx.fill();
+      ctx.stroke();
+
+      // Feed horn needle
+      ctx.strokeStyle = locked ? '#34d399' : '#fbbf24';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.moveTo(0, 12);
+      ctx.lineTo(0, -14);
+      ctx.stroke();
+
+      ctx.fillStyle = locked ? '#34d399' : '#fbbf24';
+      ctx.beginPath();
+      ctx.arc(0, -16, 4.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+
+      // Top HUD Tag
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.78)';
+      ctx.fillRect(10, 10, 236, 28);
+      ctx.fillStyle = locked ? '#34d399' : '#fbbf24';
+      ctx.font = 'bold 11px sans-serif';
+      ctx.fillText(
+        gc.hasLineOfSight
+          ? locked
+            ? 'LASER LOCKED — STREAMING DATA!'
+            : 'DRAG SKY CIRCLE ONTO SATELLITE'
+          : 'WAITING FOR CLEAR SKY DISH',
+        20,
+        28,
+      );
+
+      rafId = requestAnimationFrame(render);
     };
 
-    // Draw Satellite Target Marker if LOS active
-    const satPt = polarToXY(groundComm.navTelemetry.azimuthDeg, groundComm.navTelemetry.elevationDeg);
-    if (groundComm.hasLineOfSight) {
-      ctx.fillStyle = 'rgba(34, 211, 238, 0.25)';
-      ctx.beginPath();
-      ctx.arc(satPt.x, satPt.y, 16, 0, Math.PI * 2);
-      ctx.fill();
+    rafId = requestAnimationFrame(render);
+    return () => cancelAnimationFrame(rafId);
+  }, []);
 
-      ctx.fillStyle = '#22d3ee';
-      ctx.beginPath();
-      ctx.arc(satPt.x, satPt.y, 6, 0, Math.PI * 2);
-      ctx.fill();
-
-      ctx.fillStyle = '#cffafe';
-      ctx.font = 'bold 10px monospace';
-      ctx.fillText(
-        `SAT (${Math.round(groundComm.navTelemetry.azimuthDeg)}°/${Math.round(groundComm.navTelemetry.elevationDeg)}°)`,
-        satPt.x + 12,
-        satPt.y - 6,
-      );
-    } else {
-      ctx.fillStyle = 'rgba(244, 63, 94, 0.85)';
-      ctx.font = 'bold 11px monospace';
-      ctx.fillText('OCCLUDED BELOW HORIZON — SELECT IN-VIEW STATION OR WAIT PASS', 24, cy);
-    }
-
-    // Player Dish Beam Reticle
-    const dishPt = polarToXY(groundComm.dishAzimuthDeg, groundComm.dishElevationDeg);
-    const beamRadiusPx = groundComm.bandMode === 'Ka-Band' ? 22 : 38;
-    const isLocked = groundComm.hasLineOfSight && groundComm.dishLockQualityPct >= 65;
-
-    ctx.strokeStyle = isLocked ? '#10b981' : '#f59e0b';
-    ctx.lineWidth = 2.5;
-    ctx.beginPath();
-    ctx.arc(dishPt.x, dishPt.y, beamRadiusPx, 0, Math.PI * 2);
-    ctx.stroke();
-
-    // Dish Crosshair Center
-    ctx.beginPath();
-    ctx.moveTo(dishPt.x - 9, dishPt.y);
-    ctx.lineTo(dishPt.x + 9, dishPt.y);
-    ctx.moveTo(dishPt.x, dishPt.y - 9);
-    ctx.lineTo(dishPt.x, dishPt.y + 9);
-    ctx.stroke();
-
-    ctx.fillStyle = isLocked ? '#34d399' : '#fbbf24';
-    ctx.font = '10px monospace';
-    ctx.fillText(
-      `DISH BEAM (${groundComm.bandMode}) · LOCK ${groundComm.dishLockQualityPct}%`,
-      12,
-      h - 10,
-    );
-  }, [groundComm]);
-
-  const steerFromPointer = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    const canvas = skyCanvasRef.current;
+  // Pointer aim steering on the interactive sky canvas
+  const steerFromCanvas = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
     const px = (e.clientX - rect.left) * (canvas.width / rect.width);
     const py = (e.clientY - rect.top) * (canvas.height / rect.height);
 
-    const cx = canvas.width / 2;
-    const cy = canvas.height / 2 - 12;
-    const maxR = Math.min(canvas.width, canvas.height) * 0.4;
+    // Invert visual projection back to Azimuth/Elevation smoothly
+    const azNorm = Math.max(-1, Math.min(1, (px - canvas.width * 0.5) / (canvas.width * 0.34)));
+    const azDeg = ((Math.asin(azNorm) * 180) / Math.PI + 360) % 360;
+    const elNorm = Math.max(0.08, Math.min(0.95, (0.48 - py / canvas.height) / 0.32));
+    const elDeg = Math.round(elNorm * 90);
 
-    const dx = px - cx;
-    const dy = -(py - cy); // +North up
-    const dist = Math.hypot(dx, dy);
-    const azDeg = ((Math.atan2(dx, dy) * 180) / Math.PI + 360) % 360;
-    const elDeg = Math.max(5, Math.min(90, 90 - (dist / maxR) * 85));
+    onSteerDish(Math.round(azDeg), Math.max(6, Math.min(88, elDeg)));
+  };
 
-    onSteerDish(Math.round(azDeg), Math.round(elDeg));
+  // Visual Signal Wave Tuner position (0..100 scale, target center = 50)
+  const satAz = groundComm.navTelemetry.azimuthDeg;
+  const dishAz = groundComm.dishAzimuthDeg;
+  const azDelta = ((dishAz - satAz + 540) % 360) - 180;
+  const elDelta = groundComm.dishElevationDeg - groundComm.navTelemetry.elevationDeg;
+  const combinedDelta = Math.max(-50, Math.min(50, azDelta * 0.65 + elDelta * 0.5));
+  const tunerPct = Math.max(4, Math.min(96, 50 + combinedDelta));
+
+  const handleLockAndBeam = () => {
+    audioSynth.playSuccess();
+    if (groundComm.hasLineOfSight) {
+      onSteerDish(
+        Math.round(groundComm.navTelemetry.azimuthDeg),
+        Math.max(8, Math.round(groundComm.navTelemetry.elevationDeg)),
+      );
+      onFlushSsrBurst();
+      setBurstFlash(1);
+      setBurstBanner(
+        pendingLandmarks > 0
+          ? `Woohoo! Sent ${pendingLandmarks} new photo discover${pendingLandmarks === 1 ? 'y' : 'ies'} home!`
+          : 'Laser boost fired! Downloading science packets fast!',
+      );
+      window.setTimeout(() => setBurstBanner(null), 3200);
+    }
   };
 
   return (
     <div className="space-y-4">
-      {/* Segment Header */}
+      {/* Top Arcade Header */}
       <div className="flex flex-wrap items-center justify-between gap-4 border border-slate-800 bg-[#080d19] p-4 shadow-xl">
         <div>
-          <div className="flex items-center gap-2">
-            <span className="border border-emerald-500/50 bg-emerald-950/40 px-2 py-0.5 font-mono-tab text-[10px] font-bold uppercase tracking-wider text-emerald-300">
-              NASA Segment 3: Active Ground Dish Tracking
-            </span>
-            <span className="text-xs text-slate-400">· Sky-Dome Antenna Steering, Carrier Lock &amp; SSR Flush</span>
+          <div className="flex items-center gap-2 text-xs font-semibold text-emerald-300">
+            <Radio className="h-4 w-4" />
+            <span>Step 3 · Signal Laser Link</span>
           </div>
-          <h2 className="mt-1 font-display text-xl md:text-2xl font-bold text-white">
-            Track Moving Spacecraft Dish Pass &amp; Downlink Science Packets
+          <h2 className="mt-0.5 font-display text-xl md:text-2xl font-bold text-white">
+            Aim the Ground Dish &amp; Beam Photos Home
           </h2>
           <p className="mt-1 text-xs text-slate-300">
-            Aim the parabolic antenna reticle onto the passing satellite on the polar sky-dome, select Ka-Band or X-Band modulation, and flush buffered science discoveries before horizon blackout.
+            Click anywhere in the sky to point the dish laser at your satellite, or pick a green{' '}
+            <strong className="text-emerald-300">CLEAR SKY</strong> dish on the right!
           </p>
         </div>
 
@@ -217,111 +468,135 @@ export function GroundSegment({
           <button
             type="button"
             onClick={onPrevSegment}
-            className="border border-slate-700 bg-slate-800/80 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-700 cursor-pointer"
+            className="flex items-center gap-1 border border-slate-700 bg-slate-800/80 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-700 cursor-pointer"
           >
-            ← Space
+            <ArrowLeft className="h-3.5 w-3.5" />
+            <span>Back to Space</span>
           </button>
           <button
             type="button"
             onClick={onProceedToUser}
-            className="flex items-center gap-2 bg-cyan-500 px-5 py-2 text-xs font-bold text-slate-950 hover:bg-cyan-400 transition-colors cursor-pointer"
+            className="flex items-center gap-2 bg-emerald-400 px-5 py-2 text-xs font-bold text-slate-950 hover:bg-emerald-300 transition-colors cursor-pointer"
           >
-            <span>Segment 4: Science Map →</span>
+            <span>See My Discoveries!</span>
             <ArrowRight className="h-4 w-4" />
           </button>
         </div>
       </div>
 
-      {/* Real-Time Link & Lock Status Strip */}
+      {/* Simple Color-Coded Signal Banner */}
       <div
         className={`border p-3.5 transition-all ${
-          groundComm.hasLineOfSight
-            ? groundComm.dishLockQualityPct >= 60
-              ? 'border-emerald-500/50 bg-emerald-950/25'
-              : 'border-amber-500/50 bg-amber-950/20'
-            : 'border-rose-500/50 bg-rose-950/20'
+          !groundComm.hasLineOfSight
+            ? 'border-rose-500/60 bg-rose-950/25'
+            : isStrongLock
+              ? 'border-emerald-500/60 bg-emerald-950/25'
+              : 'border-amber-500/60 bg-amber-950/20'
         }`}
       >
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <div
-              className={`flex h-10 w-10 items-center justify-center ${
-                groundComm.hasLineOfSight ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'
+              className={`flex h-11 w-11 items-center justify-center ${
+                !groundComm.hasLineOfSight
+                  ? 'bg-rose-500/20 text-rose-400'
+                  : isStrongLock
+                    ? 'bg-emerald-500/20 text-emerald-400'
+                    : 'bg-amber-500/20 text-amber-300'
               }`}
             >
-              {groundComm.hasLineOfSight ? <Wifi className="h-5 w-5" /> : <WifiOff className="h-5 w-5" />}
+              {groundComm.hasLineOfSight ? <Wifi className="h-6 w-6" /> : <WifiOff className="h-6 w-6" />}
             </div>
             <div>
-              <div className="font-mono-tab text-xs font-bold uppercase tracking-wider text-white">
-                {groundComm.hasLineOfSight
-                  ? groundComm.dishLockQualityPct >= 60
-                    ? `● CARRIER LOCKED (${groundComm.dishLockQualityPct}%) · ${activeStation.name}`
-                    : `▲ SLEW DISH TO SATELLITE (LOCK ${groundComm.dishLockQualityPct}%)`
-                  : `✖ HORIZON BLACKOUT — SWITCH TO AN IN-VIEW STATION`}
+              <div className="font-display text-sm font-bold text-white">
+                {!groundComm.hasLineOfSight
+                  ? `${activeStationFriendly.shortName} is Behind ${body.name}!`
+                  : isStrongLock
+                    ? `Laser Connected to ${activeStationFriendly.shortName}!`
+                    : `Almost Locked! Drag the sky circle onto your satellite`}
               </div>
-              <div className="font-mono-tab text-[11px] text-slate-300">
-                Sat Az {groundComm.navTelemetry.azimuthDeg}° / El {groundComm.navTelemetry.elevationDeg}° · Captured Targets Queued: <strong className="text-amber-300">{pendingLandmarks}</strong> · Downlinked: <strong className="text-emerald-400">{downlinkedLandmarks}/{landmarks.length}</strong>
+              <div className="text-xs text-slate-300 mt-0.5">
+                {pendingLandmarks > 0 ? (
+                  <span>
+                    <strong className="text-amber-300">{pendingLandmarks} new photo(s)</strong> waiting to download!
+                  </span>
+                ) : (
+                  <span>
+                    <strong className="text-emerald-300">{downlinkedLandmarks}/{landmarks.length}</strong> planet photos safely downloaded!
+                  </span>
+                )}
               </div>
             </div>
           </div>
 
-          <div className="flex items-center gap-3 font-mono-tab text-xs">
-            <div className="border border-slate-800 bg-slate-900/70 px-3 py-1.5">
-              <span className="text-slate-400 text-[9px] block">LIVE RATE</span>
-              <strong className="text-cyan-300">{groundComm.currentDownlinkMbps} Mbps</strong>
+          <div className="flex items-center gap-3 text-xs">
+            <div className="border border-slate-800 bg-slate-900/80 px-3 py-1.5 text-center">
+              <span className="text-[10px] text-slate-400 block">Signal Strength</span>
+              <strong className={isStrongLock ? 'text-emerald-300 text-sm' : 'text-amber-300 text-sm'}>
+                {lockPct}%
+              </strong>
             </div>
-            <div className="border border-slate-800 bg-slate-900/70 px-3 py-1.5">
-              <span className="text-slate-400 text-[9px] block">DOPPLER SHIFT</span>
-              <strong className="text-amber-300">{groundComm.navTelemetry.dopplerShiftKhz} kHz</strong>
+            <div className="border border-slate-800 bg-slate-900/80 px-3 py-1.5 text-center">
+              <span className="text-[10px] text-slate-400 block">Download Speed</span>
+              <strong className="text-cyan-300 text-sm">{groundComm.currentDownlinkMbps} Mbps</strong>
             </div>
-            <div className="border border-slate-800 bg-slate-900/70 px-3 py-1.5">
-              <span className="text-slate-400 text-[9px] block">RETURNED</span>
-              <strong className="text-emerald-400">{Math.round(groundComm.totalDataDownlinkedGB)} GB</strong>
+            <div className="border border-slate-800 bg-slate-900/80 px-3 py-1.5 text-center">
+              <span className="text-[10px] text-slate-400 block">Photos Saved</span>
+              <strong className="text-emerald-300 text-sm">
+                {downlinkedLandmarks}/{landmarks.length}
+              </strong>
             </div>
           </div>
         </div>
       </div>
 
-      {/* Main Grid: Interactive Sky-Dome Tracker (Left 6 cols) & Dish Console + Station Handover (Right 6 cols) */}
+      {burstBanner && (
+        <div className="border border-emerald-400 bg-emerald-950/60 px-4 py-2.5 text-xs font-bold text-emerald-200 flex items-center gap-2">
+          <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" />
+          <span>{burstBanner}</span>
+        </div>
+      )}
+
+      {/* Main Split: Interactive Sky Laser Canvas (Left 7 cols) + World Dishes (Right 5 cols) */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-        {/* Left 6 Cols: Sky-Dome Canvas + Dish Steering Controls */}
-        <div className="lg:col-span-6 space-y-4">
+        <div className="lg:col-span-7 space-y-4">
           <div className="border border-slate-800 bg-[#080d19] p-4 space-y-3">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2">
-                <Crosshair className="h-4 w-4 text-cyan-400" />
-                <h3 className="font-display text-xs font-bold uppercase tracking-wider text-white">
-                  Polar Sky-Dome Dish Tracking Reticle
+                <Compass className="h-4 w-4 text-cyan-400" />
+                <h3 className="font-display text-sm font-bold text-white">
+                  Sky Dish Aiming Game
                 </h3>
               </div>
+
               <button
                 type="button"
                 onClick={() => {
                   audioSynth.playSelect();
                   onToggleServoAssist();
                 }}
-                className={`px-2 py-0.5 font-mono-tab text-[10px] font-bold border cursor-pointer ${
+                className={`px-3 py-1 text-xs font-bold border cursor-pointer ${
                   groundComm.servoAssistEnabled
-                    ? 'border-emerald-400 bg-emerald-950/40 text-emerald-300'
-                    : 'border-slate-700 bg-slate-900 text-slate-400 hover:text-white'
+                    ? 'border-emerald-400 bg-emerald-500 text-slate-950'
+                    : 'border-slate-700 bg-slate-900 text-slate-300 hover:text-white'
                 }`}
               >
-                {groundComm.servoAssistEnabled ? 'SERVO AUTO-TRACK: ON' : 'MANUAL STEERING'}
+                {groundComm.servoAssistEnabled ? 'Auto-Aim Helper: ON' : 'Auto-Aim Helper: OFF'}
               </button>
             </div>
 
             <div className="border border-slate-800 bg-slate-950 overflow-hidden">
               <canvas
-                ref={skyCanvasRef}
-                width={480}
-                height={340}
+                ref={canvasRef}
+                width={620}
+                height={330}
                 onPointerDown={(e) => {
                   draggingRef.current = true;
                   e.currentTarget.setPointerCapture(e.pointerId);
-                  steerFromPointer(e);
+                  steerFromCanvas(e);
                 }}
                 onPointerMove={(e) => {
-                  if (draggingRef.current) steerFromPointer(e);
+                  if (draggingRef.current) steerFromCanvas(e);
                 }}
                 onPointerUp={() => {
                   draggingRef.current = false;
@@ -329,154 +604,161 @@ export function GroundSegment({
                 onPointerLeave={() => {
                   draggingRef.current = false;
                 }}
-                className="w-full h-auto cursor-crosshair block"
+                className="w-full h-auto block cursor-crosshair"
               />
             </div>
 
-            {/* Tactile Band Mode + Bandwidth + Flush Controls */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 font-mono-tab text-xs">
-              <div className="border border-slate-800 bg-slate-900/50 p-2.5 space-y-1.5">
-                <span className="text-[10px] text-slate-400 uppercase block">Carrier Band Modulation</span>
-                <div className="grid grid-cols-2 gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => onChangeBandMode('Ka-Band')}
-                    className={`py-1.5 text-[10px] font-bold border cursor-pointer ${
-                      groundComm.bandMode === 'Ka-Band'
-                        ? 'border-cyan-400 bg-cyan-500 text-slate-950'
-                        : 'border-slate-700 bg-slate-950 text-slate-300'
-                    }`}
-                  >
-                    Ka-Band (Fast / Narrow)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onChangeBandMode('X-Band')}
-                    className={`py-1.5 text-[10px] font-bold border cursor-pointer ${
-                      groundComm.bandMode === 'X-Band'
-                        ? 'border-emerald-400 bg-emerald-500 text-slate-950'
-                        : 'border-slate-700 bg-slate-950 text-slate-300'
-                    }`}
-                  >
-                    X-Band (Wide Beam)
-                  </button>
-                </div>
+            {/* Visual Green Sweet-Spot Signal Bar */}
+            <div className="border border-slate-800 bg-slate-900/60 p-3 space-y-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-semibold text-slate-200">Signal Alignment Meter</span>
+                <span className={isStrongLock ? 'font-bold text-emerald-300' : 'font-bold text-amber-300'}>
+                  {isStrongLock ? 'IN THE GREEN SWEET SPOT!' : 'Slide or click sky to center the beam'}
+                </span>
               </div>
 
-              <div className="border border-slate-800 bg-slate-900/50 p-2.5 space-y-1.5">
-                <div className="flex justify-between text-[10px]">
-                  <span className="text-slate-400 uppercase">Downlink Bandwidth</span>
-                  <strong className="text-cyan-300">{groundComm.allocatedBandwidthPct}%</strong>
+              <div className="relative h-5 w-full overflow-hidden border border-slate-700 bg-slate-950">
+                {/* Color zones: Red -> Yellow -> Green -> Yellow -> Red */}
+                <div className="absolute inset-0 flex">
+                  <div className="w-[18%] bg-rose-500/35" />
+                  <div className="w-[20%] bg-amber-400/35" />
+                  <div className="w-[24%] bg-emerald-400/45 border-x border-emerald-400/80" />
+                  <div className="w-[20%] bg-amber-400/35" />
+                  <div className="w-[18%] bg-rose-500/35" />
                 </div>
-                <input
-                  type="range"
-                  min={25}
-                  max={100}
-                  step={25}
-                  value={groundComm.allocatedBandwidthPct}
-                  onChange={(e) => onChangeBandwidthPct(parseInt(e.target.value, 10))}
-                  aria-label="Downlink Bandwidth Allocation"
-                  className="w-full accent-cyan-400 h-1.5 bg-slate-800 cursor-pointer"
+
+                {/* Live tuner needle */}
+                <div
+                  className="absolute top-0 bottom-0 w-2 bg-white shadow-lg transition-all duration-75"
+                  style={{ left: `calc(${tunerPct}% - 4px)` }}
                 />
+              </div>
+
+              {/* Simple Dish Aim & Beam Mode Controls */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                <div className="space-y-1">
+                  <span className="text-[11px] font-semibold text-slate-300 block">Beam Shape</span>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        audioSynth.playSelect();
+                        onChangeBandMode('Ka-Band');
+                      }}
+                      className={`py-1.5 px-2 text-xs font-bold border cursor-pointer ${
+                        groundComm.bandMode === 'Ka-Band'
+                          ? 'border-cyan-400 bg-cyan-500 text-slate-950'
+                          : 'border-slate-700 bg-slate-950 text-slate-300'
+                      }`}
+                    >
+                      Fast Laser (Narrow)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        audioSynth.playSelect();
+                        onChangeBandMode('X-Band');
+                      }}
+                      className={`py-1.5 px-2 text-xs font-bold border cursor-pointer ${
+                        groundComm.bandMode === 'X-Band'
+                          ? 'border-emerald-400 bg-emerald-400 text-slate-950'
+                          : 'border-slate-700 bg-slate-950 text-slate-300'
+                      }`}
+                    >
+                      Wide Beam (Easy)
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[11px]">
+                    <span className="font-semibold text-slate-300">Dish Power</span>
+                    <strong className="text-cyan-300">{groundComm.allocatedBandwidthPct}%</strong>
+                  </div>
+                  <input
+                    type="range"
+                    min={25}
+                    max={100}
+                    step={25}
+                    value={groundComm.allocatedBandwidthPct}
+                    onChange={(e) => onChangeBandwidthPct(parseInt(e.target.value, 10))}
+                    aria-label="Dish Power"
+                    className="w-full accent-cyan-400 h-2 bg-slate-800 cursor-pointer"
+                  />
+                </div>
               </div>
             </div>
 
-            {/* Dish Manual Slew + Flush Button */}
-            <div className="grid grid-cols-2 gap-2 font-mono-tab text-xs">
+            {/* Big Arcade Action Buttons */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
               <button
                 type="button"
                 onClick={() => {
                   audioSynth.playSelect();
                   onSteerDish(
                     Math.round(groundComm.navTelemetry.azimuthDeg),
-                    Math.max(5, Math.round(groundComm.navTelemetry.elevationDeg)),
+                    Math.max(8, Math.round(groundComm.navTelemetry.elevationDeg)),
                   );
                 }}
                 disabled={!groundComm.hasLineOfSight}
-                className={`py-2 px-3 flex items-center justify-center gap-1.5 font-bold uppercase border cursor-pointer ${
+                className={`py-2.5 px-4 flex items-center justify-center gap-2 text-xs font-bold cursor-pointer border ${
                   groundComm.hasLineOfSight
-                    ? 'border-cyan-500/50 bg-cyan-950/40 text-cyan-300 hover:bg-cyan-900/60'
+                    ? 'border-cyan-400 bg-cyan-950/50 text-cyan-200 hover:bg-cyan-900/60'
                     : 'border-slate-800 bg-slate-900 text-slate-600 cursor-not-allowed'
                 }`}
               >
-                <Compass className="h-3.5 w-3.5" />
-                Acquire Sat Vector
+                <Zap className="h-4 w-4" />
+                Snap Dish to Satellite
               </button>
 
               <button
                 type="button"
-                onClick={() => {
-                  audioSynth.playSuccess();
-                  onFlushSsrBurst();
-                }}
-                disabled={!groundComm.hasLineOfSight || groundComm.dishLockQualityPct < 45}
-                className={`py-2 px-3 flex items-center justify-center gap-1.5 font-bold uppercase cursor-pointer ${
-                  groundComm.hasLineOfSight && groundComm.dishLockQualityPct >= 45
+                onClick={handleLockAndBeam}
+                disabled={!groundComm.hasLineOfSight}
+                className={`py-2.5 px-4 flex items-center justify-center gap-2 text-xs font-bold cursor-pointer ${
+                  groundComm.hasLineOfSight
                     ? 'bg-emerald-400 hover:bg-emerald-300 text-slate-950'
                     : 'bg-slate-800 text-slate-500 cursor-not-allowed'
                 }`}
               >
-                <Sliders className="h-3.5 w-3.5" />
-                Flush SSR Burst
+                <Send className="h-4 w-4" />
+                {pendingLandmarks > 0 ? `Beam ${pendingLandmarks} Photo(s) Home!` : 'Boost Data Download!'}
               </button>
             </div>
           </div>
 
-          {/* SSR Buffer Card */}
-          <div className="border border-slate-800 bg-[#080d19] p-4 space-y-2.5 font-mono-tab">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
+          {/* Simple Spacecraft Memory Bar */}
+          <div className="border border-slate-800 bg-[#080d19] p-4 space-y-2">
+            <div className="flex items-center justify-between text-xs">
+              <div className="flex items-center gap-2 font-bold text-white">
                 <HardDrive className="h-4 w-4 text-cyan-400" />
-                <h3 className="font-display text-xs font-bold uppercase tracking-wider text-white">
-                  Onboard Solid-State Recorder (SSR)
-                </h3>
+                <span>Satellite Photo Memory</span>
               </div>
-              <span className={`text-[10px] font-bold ${isBufferOverflowRisk ? 'text-rose-400' : 'text-slate-300'}`}>
-                {bufferPct.toFixed(1)}% ({groundComm.bufferStoredGB.toFixed(1)}/{groundComm.bufferCapacityGB} GB)
+              <span className="text-slate-300">
+                {bufferPct.toFixed(0)}% Full ({Math.round(groundComm.totalDataDownlinkedGB)} GB sent home)
               </span>
             </div>
-
             <div className="h-3 w-full bg-slate-800 overflow-hidden">
               <div
                 className={`h-full transition-all duration-150 ${
-                  isBufferOverflowRisk ? 'bg-rose-500' : bufferPct > 55 ? 'bg-amber-400' : 'bg-cyan-400'
+                  bufferPct > 85 ? 'bg-rose-500' : bufferPct > 55 ? 'bg-amber-400' : 'bg-cyan-400'
                 }`}
                 style={{ width: `${bufferPct}%` }}
               />
             </div>
-
-            <div className="grid grid-cols-3 gap-2 text-[10px] pt-1">
-              <div className="border border-slate-800 bg-slate-900/50 p-2">
-                <span className="text-slate-500 block">DISH AZ / EL</span>
-                <strong className="text-white">{groundComm.dishAzimuthDeg}° / {groundComm.dishElevationDeg}°</strong>
-              </div>
-              <div className="border border-slate-800 bg-slate-900/50 p-2">
-                <span className="text-slate-500 block">RANGE</span>
-                <strong className="text-cyan-300">{groundComm.navTelemetry.rangeKm.toLocaleString()} km</strong>
-              </div>
-              <div className="border border-slate-800 bg-slate-900/50 p-2">
-                <span className="text-slate-500 block">SIGNAL STRENGTH</span>
-                <strong className="text-emerald-400">{groundComm.navTelemetry.signalStrengthDbm} dBm</strong>
-              </div>
-            </div>
           </div>
         </div>
 
-        {/* Right 6 Cols: Interactive Ground Station Handover Directory */}
-        <div className="lg:col-span-6 border border-slate-800 bg-[#080d19] p-4 space-y-3">
+        {/* Right 5 Cols: World Ground Dish Switcher */}
+        <div className="lg:col-span-5 border border-slate-800 bg-[#080d19] p-4 space-y-3">
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Radio className="h-4 w-4 text-emerald-400" />
-              <h3 className="font-display text-xs font-bold uppercase tracking-wider text-white">
-                Station Handover Selector (Click to Switch Dish)
-              </h3>
-            </div>
-            <span className="font-mono-tab text-[10px] text-slate-400">
-              Sub-Sat: {orbitState.subSatLatDeg}°, {orbitState.subSatLonDeg}°
-            </span>
+            <h3 className="font-display text-sm font-bold text-white">
+              Pick a Ground Dish With Clear Sky
+            </h3>
+            <span className="text-[11px] text-slate-400">{stations.length} Dishes</span>
           </div>
 
-          <div className="space-y-2 max-h-[480px] overflow-y-auto pr-1">
+          <div className="space-y-2 max-h-[470px] overflow-y-auto pr-1">
             {stations.map((st) => {
               const los = checkLineOfSight(
                 selectedObjective.targetBody,
@@ -487,6 +769,7 @@ export function GroundSegment({
                 orbitState.orbitalSpeedKms,
               );
               const isSelected = st.id === groundComm.activeStationId;
+              const info = getFriendlyStationLabel(st.id, st.name);
 
               return (
                 <button
@@ -496,58 +779,34 @@ export function GroundSegment({
                     audioSynth.playSelect();
                     onSelectStation(st.id);
                   }}
-                  className={`w-full text-left border p-3 transition-colors cursor-pointer ${
+                  className={`w-full text-left border p-3 transition-all cursor-pointer ${
                     isSelected
-                      ? 'border-cyan-400 bg-cyan-950/30 ring-1 ring-cyan-500/40'
+                      ? 'border-cyan-400 bg-cyan-950/35 ring-1 ring-cyan-400/50'
                       : los.hasLineOfSight
-                      ? 'border-emerald-500/40 bg-emerald-950/15 hover:border-emerald-400'
-                      : 'border-slate-800 bg-slate-900/50 hover:border-slate-700'
+                        ? 'border-emerald-500/45 bg-emerald-950/20 hover:border-emerald-400'
+                        : 'border-slate-800 bg-slate-900/55 hover:border-slate-700'
                   }`}
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div>
-                      <div className="font-mono-tab text-[10px] uppercase tracking-wider text-cyan-300">
-                        {st.agency} · {st.network}
-                      </div>
-                      <div className="mt-0.5 font-display text-xs font-bold text-white">{st.name}</div>
-                      <p className="mt-1 text-[11px] text-slate-300">{st.locationDesc}</p>
+                      <div className="text-[11px] font-bold text-cyan-300">{info.flag}</div>
+                      <div className="font-display text-sm font-bold text-white">{info.shortName}</div>
+                      <p className="mt-0.5 text-xs text-slate-300">{info.vibe}</p>
                     </div>
 
                     <span
-                      className={`font-mono-tab text-[10px] font-bold px-2 py-0.5 shrink-0 ${
+                      className={`text-[11px] font-bold px-2 py-0.5 shrink-0 ${
                         los.hasLineOfSight
-                          ? 'bg-emerald-500 text-slate-950'
+                          ? 'bg-emerald-400 text-slate-950'
                           : 'bg-slate-800 text-slate-400'
                       }`}
                     >
-                      {los.hasLineOfSight ? `PASS (${los.elevationAngleDeg}° El)` : 'OCCLUDED'}
+                      {los.hasLineOfSight ? 'CLEAR SKY' : 'BEHIND PLANET'}
                     </span>
-                  </div>
-
-                  <div className="mt-2 pt-2 border-t border-slate-800/80 grid grid-cols-3 gap-2 font-mono-tab text-[10px] text-slate-400">
-                    <div>
-                      Dish: <strong className="text-slate-200">{st.antennaDiameterM}m</strong>
-                    </div>
-                    <div>
-                      Band: <strong className="text-cyan-300">{st.frequencyBand}</strong>
-                    </div>
-                    <div>
-                      Max: <strong className="text-slate-200">{st.maxDataRateMbps} Mbps</strong>
-                    </div>
                   </div>
                 </button>
               );
             })}
-          </div>
-
-          <div className="border border-emerald-500/30 bg-emerald-950/15 p-3 text-xs space-y-1">
-            <div className="flex items-center gap-1.5 font-bold text-emerald-300">
-              <Waves className="h-3.5 w-3.5" />
-              Why High-Latitude Dishes (CSA Inuvik 68.3°N) Matter
-            </div>
-            <p className="text-[11px] text-slate-300 leading-relaxed">
-              Equatorial dishes miss high-latitude polar orbits for hours. Switching to northern stations like CSA Inuvik or Svalbard keeps continuous Line-of-Sight on {body.name} polar orbits so science buffers never overflow.
-            </p>
           </div>
         </div>
       </div>

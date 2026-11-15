@@ -1,34 +1,24 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  Rocket,
-  Flame,
-  CheckCircle2,
-  AlertTriangle,
-  RotateCcw,
+  ArrowLeft,
   ArrowRight,
-  Calendar,
+  Flame,
   Gauge,
-  Compass,
-  ShieldAlert,
-  ChevronDown,
-  ChevronUp,
-  Zap,
+  RotateCcw,
+  Rocket,
+  ShieldCheck,
+  Sparkles,
+  Trophy,
 } from 'lucide-react';
 import { audioSynth } from '../../audio/synth';
 import {
   NASA_ROCKETS,
-  calculateLaunchWindowAnalysis,
-  calculateRocketDeltaV,
   calculateTargetDeltaV,
-  createInitialLaunchTelemetry,
-  stepAscentPhysics,
   type NasaRocketSpec,
 } from '../../engine/orbitalMechanics';
 import type {
-  ActiveLaunchTelemetry,
   ArchitectMode,
   LaunchBurnState,
-  LaunchWindowSpec,
   NasaInstrument,
   NasaObjectiveSpec,
   PropulsionType,
@@ -48,6 +38,38 @@ interface LaunchSegmentProps {
   onPrevSegment: () => void;
 }
 
+interface Particle {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  life: number;
+  maxLife: number;
+  color: string;
+  size: number;
+}
+
+interface FuelRing {
+  id: number;
+  progressY: number; // 0 (pad) -> 1 (space)
+  laneX: number; // -1..1
+  collected: boolean;
+}
+
+interface WindCloud {
+  id: number;
+  progressY: number;
+  laneX: number;
+  hitCooldown: number;
+}
+
+const ROCKET_NICKNAMES: Record<string, { label: string; powerText: string }> = {
+  'vega-c': { label: 'Swift Scout Rocket', powerText: 'Light & Nimble' },
+  'falcon-9': { label: 'Falcon Twin-Stage', powerText: 'Balanced All-Rounder' },
+  'vulcan-centaur': { label: 'Vulcan Heavy Booster', powerText: 'Deep-Space Muscle' },
+  'sls-block1': { label: 'Mega Moon Rocket', powerText: 'Maximum Lift Power' },
+};
+
 export function LaunchSegment({
   architectMode,
   selectedObjective,
@@ -64,125 +86,99 @@ export function LaunchSegment({
     instruments.reduce((sum, inst) => sum + (inst.enabled ? inst.massKg : 0), 0) +
     420 +
     propellantBudgetKg;
+  const isPayloadTooHeavy = architectMode !== 'sandbox' && totalPayloadMassKg > selectedRocket.maxPayloadKg;
 
-  const [departureDayOffset, setDepartureDayOffset] = useState<number>(0);
-  const launchWindow: LaunchWindowSpec = calculateLaunchWindowAnalysis(
-    selectedObjective.targetBody,
-    departureDayOffset,
-  );
-
-  const baseTargetDeltaVKms = calculateTargetDeltaV(
+  const targetDeltaVKms = calculateTargetDeltaV(
     selectedObjective.targetBody,
     selectedObjective.targetAltitudeKm,
     selectedObjective.regime,
   );
-  const windowPenaltyDeltaVKms =
-    selectedObjective.regime === 'interplanetary' || selectedObjective.regime === 'lunar'
-      ? Math.max(0, launchWindow.minDeltaVKms - 3.65)
-      : 0;
-  const targetDeltaVKms = Number((baseTargetDeltaVKms + windowPenaltyDeltaVKms).toFixed(2));
 
-  const [showPrelaunchConfig, setShowPrelaunchConfig] = useState(false);
-  const [autoGuidance, setAutoGuidance] = useState(architectMode === 'cadet');
-  const [telemetry, setTelemetry] = useState<ActiveLaunchTelemetry>(() =>
-    createInitialLaunchTelemetry(targetDeltaVKms, selectedRocket),
-  );
+  // Arcade Game State
+  const [phase, setPhase] = useState<'pad' | 'flying' | 'deployed' | 'crashed'>('pad');
+  const [altitudePct, setAltitudePct] = useState(0); // 0 -> 100
+  const [fuelPct, setFuelPct] = useState(100);
+  const [hullSafetyPct, setHullSafetyPct] = useState(100);
+  const [ringsCollected, setRingsCollected] = useState(0);
+  const [score, setScore] = useState(0);
+  const [isBoosting, setIsBoosting] = useState(false);
+  const [bannerHint, setBannerHint] = useState('HOLD BOOST & STEER INTO THE GREEN CORRIDOR!');
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const telemetryRef = useRef(telemetry);
-  telemetryRef.current = telemetry;
+  const gameRef = useRef({
+    phase: 'pad' as 'pad' | 'flying' | 'deployed' | 'crashed',
+    rocketX: 0, // -1 .. 1 around corridor center
+    rocketVx: 0,
+    altitude: 0, // 0 .. 115
+    speed: 0, // 0 .. 1
+    fuel: 100,
+    hull: 100,
+    ringsCollected: 0,
+    score: 0,
+    boosting: false,
+    steerLeft: false,
+    steerRight: false,
+    pointerTargetX: null as number | null,
+    shakeFrames: 0,
+    particles: [] as Particle[],
+    rings: [
+      { id: 1, progressY: 16, laneX: 0.12, collected: false },
+      { id: 2, progressY: 33, laneX: -0.22, collected: false },
+      { id: 3, progressY: 50, laneX: 0.28, collected: false },
+      { id: 4, progressY: 67, laneX: -0.1, collected: false },
+      { id: 5, progressY: 82, laneX: 0.18, collected: false },
+    ] as FuelRing[],
+    clouds: [
+      { id: 1, progressY: 26, laneX: -0.35, hitCooldown: 0 },
+      { id: 2, progressY: 44, laneX: 0.42, hitCooldown: 0 },
+      { id: 3, progressY: 61, laneX: -0.45, hitCooldown: 0 },
+    ] as WindCloud[],
+    stars: Array.from({ length: 65 }, (_, i) => ({
+      x: ((i * 97) % 100) / 100,
+      y: ((i * 53) % 100) / 100,
+      r: (i % 3) + 1,
+    })),
+  });
 
-  const autoGuidanceRef = useRef(autoGuidance);
-  autoGuidanceRef.current = autoGuidance;
-
-  const rocketPerf = calculateRocketDeltaV(selectedRocket, totalPayloadMassKg, 1.0);
-  const isPayloadTooHeavy = totalPayloadMassKg > selectedRocket.maxPayloadKg;
-  const isTwrTooLow = rocketPerf.thrustToWeightRatio < 1.1;
-
-  // Reset telemetry when rocket or target delta-v changes while prelaunch
-  useEffect(() => {
-    setTelemetry((prev) => {
-      if (prev.phase === 'ascent') return prev;
-      return createInitialLaunchTelemetry(targetDeltaVKms, selectedRocket);
-    });
-  }, [selectedRocket, targetDeltaVKms]);
-
-  const handleLiftoff = useCallback(() => {
-    if (isPayloadTooHeavy || isTwrTooLow) {
-      audioSynth.playAlert();
-      return;
-    }
-    audioSynth.playMountPart();
-    const fresh = createInitialLaunchTelemetry(targetDeltaVKms, selectedRocket);
-    fresh.phase = 'ascent';
-    fresh.throttlePct = 100;
-    fresh.pitchDeg = 90;
-    setTelemetry(fresh);
-    onUpdateBurnState({
-      status: 'burning',
-      throttlePct: 100,
-      burnDurationSec: 0,
-      targetDeltaVKms,
-      deliveredDeltaVKms: 0,
-      propellantUsedKg: 0,
-      outcomeType: 'pending',
-      outcomeSummary: 'Ascent active — manage throttle through Max-Q and follow the gravity-turn pitch corridor!',
-    });
-  }, [isPayloadTooHeavy, isTwrTooLow, targetDeltaVKms, selectedRocket, onUpdateBurnState]);
-
-  const handleExecuteSeco = useCallback(() => {
-    const t = telemetryRef.current;
-    if (t.phase !== 'ascent') return;
-
-    const velRatio = t.velocityKms / Math.max(0.1, t.targetVelocityKms);
-    const diffRatio = velRatio - 1.0;
-    const fuelUsed = Math.round(t.fuelTotalKg - t.fuelRemainingKg);
-    const deliveredDv = Number(t.velocityKms.toFixed(2));
-
-    let outcomeType: LaunchBurnState['outcomeType'] = 'nominal';
-    let outcomeSummary = '';
-    let isSuccess = true;
-
-    if (t.altitudeKm < 65 || diffRatio < -0.06) {
-      outcomeType = 'underburn';
-      isSuccess = false;
-      outcomeSummary = `Premature SECO (${deliveredDv} km/s at ${t.altitudeKm} km): Insufficient orbital velocity or altitude to clear atmosphere.`;
-    } else if (diffRatio > 0.07) {
-      outcomeType = 'overburn';
-      isSuccess = false;
-      outcomeSummary = `Late SECO Over-Burn (${deliveredDv} km/s > ${t.targetVelocityKms} km/s): Overshot target apogee corridor.`;
-    } else {
-      outcomeType = 'nominal';
-      isSuccess = true;
-      outcomeSummary = `Clean SECO Orbital Insertion! Cut engines at ${deliveredDv} km/s (${Math.round(t.launchEfficiencyScore)}% ascent efficiency).`;
-    }
-
-    if (isSuccess) audioSynth.playSuccess();
-    else audioSynth.playAlert();
-
-    setTelemetry((prev) => ({
-      ...prev,
-      phase: isSuccess ? 'seco' : 'failed',
-      throttlePct: 0,
-      failureReason: isSuccess ? null : outcomeSummary,
-    }));
-
-    onUpdateBurnState({
-      status: isSuccess ? 'completed' : 'failed',
-      throttlePct: 0,
-      burnDurationSec: Math.round(t.timeSec),
-      targetDeltaVKms: t.targetVelocityKms,
-      deliveredDeltaVKms: deliveredDv,
-      propellantUsedKg: fuelUsed,
-      outcomeType,
-      outcomeSummary,
-      launchEfficiencyScore: t.launchEfficiencyScore,
-    });
-  }, [onUpdateBurnState]);
-
-  const handleResetPad = useCallback(() => {
+  // Reset pad helper
+  const resetLaunchpad = useCallback(() => {
     audioSynth.playSelect();
-    setTelemetry(createInitialLaunchTelemetry(targetDeltaVKms, selectedRocket));
+    gameRef.current = {
+      ...gameRef.current,
+      phase: 'pad',
+      rocketX: 0,
+      rocketVx: 0,
+      altitude: 0,
+      speed: 0,
+      fuel: 100,
+      hull: 100,
+      ringsCollected: 0,
+      score: 0,
+      boosting: false,
+      pointerTargetX: null,
+      shakeFrames: 0,
+      particles: [],
+      rings: [
+        { id: 1, progressY: 16, laneX: 0.14, collected: false },
+        { id: 2, progressY: 33, laneX: -0.22, collected: false },
+        { id: 3, progressY: 50, laneX: 0.26, collected: false },
+        { id: 4, progressY: 67, laneX: -0.12, collected: false },
+        { id: 5, progressY: 82, laneX: 0.18, collected: false },
+      ],
+      clouds: [
+        { id: 1, progressY: 26, laneX: -0.36, hitCooldown: 0 },
+        { id: 2, progressY: 44, laneX: 0.42, hitCooldown: 0 },
+        { id: 3, progressY: 61, laneX: -0.44, hitCooldown: 0 },
+      ],
+    };
+    setPhase('pad');
+    setAltitudePct(0);
+    setFuelPct(100);
+    setHullSafetyPct(100);
+    setRingsCollected(0);
+    setScore(0);
+    setIsBoosting(false);
+    setBannerHint('TAP LAUNCH TO IGNITE ROCKETS!');
     onUpdateBurnState({
       status: 'idle',
       throttlePct: 100,
@@ -191,751 +187,825 @@ export function LaunchSegment({
       deliveredDeltaVKms: 0,
       propellantUsedKg: 0,
       outcomeType: 'pending',
-      outcomeSummary: 'Vehicle on launch pad. Ignite engines and pilot gravity turn to SECO.',
+      outcomeSummary: 'Rocket ready on launchpad.',
     });
-  }, [targetDeltaVKms, selectedRocket, onUpdateBurnState]);
+  }, [onUpdateBurnState, targetDeltaVKms]);
 
-  // Real-Time Ascent Physics Loop (60ms tick)
+  const startLaunch = useCallback(() => {
+    if (isPayloadTooHeavy) {
+      audioSynth.playAlert();
+      setBannerHint('ROCKET TOO SMALL FOR PAYLOAD! PICK A BIGGER ROCKET!');
+      return;
+    }
+    audioSynth.playMountPart();
+    gameRef.current.phase = 'flying';
+    gameRef.current.boosting = true;
+    gameRef.current.speed = 0.25;
+    setPhase('flying');
+    setIsBoosting(true);
+    setBannerHint('STEER INTO GREEN CORRIDOR & GRAB GOLD RINGS!');
+    onUpdateBurnState({
+      status: 'burning',
+      throttlePct: 100,
+      burnDurationSec: 0,
+      targetDeltaVKms,
+      deliveredDeltaVKms: 0,
+      propellantUsedKg: 0,
+      outcomeType: 'pending',
+      outcomeSummary: 'Liftoff! Keep rocket inside the glowing green flight corridor.',
+    });
+  }, [isPayloadTooHeavy, onUpdateBurnState, targetDeltaVKms]);
+
+  const deploySatellite = useCallback(() => {
+    const g = gameRef.current;
+    if (g.phase !== 'flying') return;
+
+    const inTargetZone = g.altitude >= 78 && g.altitude <= 104;
+    if (inTargetZone) {
+      audioSynth.playSuccess();
+      g.phase = 'deployed';
+      g.boosting = false;
+      const finalScore = Math.min(100, Math.round(70 + g.ringsCollected * 6 + g.hull * 0.15));
+      g.score += 300 + g.ringsCollected * 100;
+      // Confetti burst!
+      const confettiColors = ['#22d3ee', '#34d399', '#fbbf24', '#fb7185', '#a855f7'];
+      for (let i = 0; i < 55; i++) {
+        const ang = Math.random() * Math.PI * 2;
+        const spd = 1.5 + Math.random() * 5.5;
+        g.particles.push({
+          x: 0,
+          y: 0,
+          vx: Math.cos(ang) * spd,
+          vy: Math.sin(ang) * spd,
+          life: 65,
+          maxLife: 65,
+          color: confettiColors[i % confettiColors.length],
+          size: 4 + Math.random() * 4,
+        });
+      }
+      setPhase('deployed');
+      setIsBoosting(false);
+      setScore(g.score);
+      setBannerHint('ORBIT LOCKED! SATELLITE DEPLOYED WITH CONFETTI!');
+      onUpdateBurnState({
+        status: 'completed',
+        throttlePct: 0,
+        burnDurationSec: 28,
+        targetDeltaVKms,
+        deliveredDeltaVKms: targetDeltaVKms,
+        propellantUsedKg: Math.round((1 - g.fuel / 100) * propellantBudgetKg),
+        outcomeType: 'nominal',
+        outcomeSummary: `Satellite deployed cleanly into orbit! Collected ${g.ringsCollected} gold rings.`,
+        launchEfficiencyScore: finalScore,
+      });
+    } else if (g.altitude < 78) {
+      audioSynth.playAlert();
+      g.phase = 'crashed';
+      g.boosting = false;
+      setPhase('crashed');
+      setIsBoosting(false);
+      setBannerHint('DEPLOYED TOO EARLY! REACH THE GREEN ORBIT ZONE FIRST!');
+      onUpdateBurnState({
+        status: 'failed',
+        throttlePct: 0,
+        burnDurationSec: 15,
+        targetDeltaVKms,
+        deliveredDeltaVKms: Number((targetDeltaVKms * (g.altitude / 90)).toFixed(2)),
+        propellantUsedKg: Math.round((1 - g.fuel / 100) * propellantBudgetKg),
+        outcomeType: 'underburn',
+        outcomeSummary: 'Cutoff happened too low before reaching space!',
+        launchEfficiencyScore: 45,
+      });
+    }
+  }, [onUpdateBurnState, propellantBudgetKg, targetDeltaVKms]);
+
+  // Keyboard Controls
   useEffect(() => {
-    if (telemetry.phase !== 'ascent') return;
+    const down = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      const g = gameRef.current;
+      if (e.key === 'ArrowLeft' || e.key.toLowerCase() === 'a') {
+        g.steerLeft = true;
+        g.pointerTargetX = null;
+      } else if (e.key === 'ArrowRight' || e.key.toLowerCase() === 'd') {
+        g.steerRight = true;
+        g.pointerTargetX = null;
+      } else if (e.code === 'Space' || e.key === 'ArrowUp' || e.key.toLowerCase() === 'w') {
+        e.preventDefault();
+        if (g.phase === 'pad') startLaunch();
+        else if (g.phase === 'flying') {
+          if (g.altitude >= 78 && g.altitude <= 104) deploySatellite();
+          else {
+            g.boosting = true;
+            setIsBoosting(true);
+          }
+        }
+      }
+    };
+    const up = (e: KeyboardEvent) => {
+      const g = gameRef.current;
+      if (e.key === 'ArrowLeft' || e.key.toLowerCase() === 'a') g.steerLeft = false;
+      if (e.key === 'ArrowRight' || e.key.toLowerCase() === 'd') g.steerRight = false;
+      if (e.code === 'Space' || e.key === 'ArrowUp' || e.key.toLowerCase() === 'w') {
+        if (g.phase === 'flying') {
+          g.boosting = false;
+          setIsBoosting(false);
+        }
+      }
+    };
+    window.addEventListener('keydown', down);
+    window.addEventListener('keyup', up);
+    return () => {
+      window.removeEventListener('keydown', down);
+      window.removeEventListener('keyup', up);
+    };
+  }, [startLaunch, deploySatellite]);
 
-    const timer = window.setInterval(() => {
-      setTelemetry((prev) => {
-        if (prev.phase !== 'ascent') return prev;
-        const next = stepAscentPhysics(
-          prev,
-          selectedRocket,
-          selectedObjective.targetAltitudeKm,
-          0.16,
-          autoGuidanceRef.current,
-        );
-        if (next.phase === 'failed') {
+  // 60FPS Arcade Launch Loop + Canvas Render
+  useEffect(() => {
+    let raf = 0;
+
+    const tick = () => {
+      const g = gameRef.current;
+      const canvas = canvasRef.current;
+      if (!canvas) {
+        raf = requestAnimationFrame(tick);
+        return;
+      }
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      const w = canvas.width;
+      const h = canvas.height;
+
+      // Corridor curve function: gentle S-curve bending into orbit
+      const corridorCenterX = (alt: number) => Math.sin(alt * 0.085) * 0.28;
+
+      if (g.phase === 'flying') {
+        // Horizontal steering
+        if (g.steerLeft) g.rocketVx -= 0.008;
+        if (g.steerRight) g.rocketVx += 0.008;
+        if (g.pointerTargetX !== null) {
+          g.rocketVx += (g.pointerTargetX - g.rocketX) * 0.09;
+        }
+        g.rocketVx *= 0.86;
+        g.rocketX = Math.max(-0.92, Math.min(0.92, g.rocketX + g.rocketVx));
+
+        // Vertical thrust & fuel burn
+        if (g.boosting && g.fuel > 0) {
+          g.speed = Math.min(0.42, g.speed + 0.018);
+          g.fuel = Math.max(0, g.fuel - 0.18);
+          // Flame particles
+          for (let i = 0; i < 2; i++) {
+            g.particles.push({
+              x: g.rocketX * (w * 0.36) + (Math.random() - 0.5) * 8,
+              y: 26,
+              vx: (Math.random() - 0.5) * 1.4,
+              vy: 2.5 + Math.random() * 2.5,
+              life: 24,
+              maxLife: 24,
+              color: Math.random() > 0.4 ? '#fb923c' : '#fde047',
+              size: 4 + Math.random() * 4,
+            });
+          }
+        } else {
+          g.speed = Math.max(0.05, g.speed * 0.96);
+        }
+
+        g.altitude += g.speed;
+
+        // Check corridor alignment bonus
+        const corrDist = Math.abs(g.rocketX - corridorCenterX(g.altitude));
+        if (corrDist < 0.24) {
+          g.score += 1;
+        } else if (corrDist > 0.55) {
+          g.hull = Math.max(0, g.hull - 0.08);
+        }
+
+        // Collect Gold Rings
+        g.rings.forEach((ring) => {
+          if (
+            !ring.collected &&
+            Math.abs(g.altitude - ring.progressY) < 4.5 &&
+            Math.abs(g.rocketX - ring.laneX) < 0.24
+          ) {
+            ring.collected = true;
+            g.ringsCollected += 1;
+            g.score += 150;
+            g.fuel = Math.min(100, g.fuel + 12);
+            audioSynth.playSuccess();
+            for (let k = 0; k < 14; k++) {
+              const ang = (k / 14) * Math.PI * 2;
+              g.particles.push({
+                x: ring.laneX * (w * 0.36),
+                y: 0,
+                vx: Math.cos(ang) * 3.5,
+                vy: Math.sin(ang) * 3.5,
+                life: 28,
+                maxLife: 28,
+                color: '#fbbf24',
+                size: 4,
+              });
+            }
+          }
+        });
+
+        // Dodge Wind Shear Clouds
+        g.clouds.forEach((c) => {
+          if (c.hitCooldown > 0) c.hitCooldown -= 1;
+          if (
+            c.hitCooldown === 0 &&
+            Math.abs(g.altitude - c.progressY) < 4 &&
+            Math.abs(g.rocketX - c.laneX) < 0.22
+          ) {
+            c.hitCooldown = 30;
+            g.hull = Math.max(0, g.hull - 18);
+            g.shakeFrames = 14;
+            audioSynth.playAlert();
+          }
+        });
+
+        // Hint updates & failure/overshoot checks
+        if (g.altitude >= 78 && g.altitude <= 104) {
+          setBannerHint('GREEN TARGET ZONE! TAP "DEPLOY SATELLITE!" NOW!');
+        } else if (g.altitude > 106) {
+          g.phase = 'crashed';
+          g.boosting = false;
           audioSynth.playAlert();
+          setPhase('crashed');
+          setIsBoosting(false);
+          setBannerHint('OVERSHOT SPACE ORBIT! RESET PAD & DEPLOY INSIDE GREEN BAND!');
           onUpdateBurnState({
             status: 'failed',
             throttlePct: 0,
-            burnDurationSec: Math.round(next.timeSec),
-            targetDeltaVKms: next.targetVelocityKms,
-            deliveredDeltaVKms: Number(next.velocityKms.toFixed(2)),
-            propellantUsedKg: Math.round(next.fuelTotalKg - next.fuelRemainingKg),
-            outcomeType: next.velocityKms > next.targetVelocityKms ? 'overburn' : 'underburn',
-            outcomeSummary: next.failureReason || 'Ascent anomaly forced mission abort.',
-            launchEfficiencyScore: next.launchEfficiencyScore,
+            burnDurationSec: 34,
+            targetDeltaVKms,
+            deliveredDeltaVKms: Number((targetDeltaVKms * 1.15).toFixed(2)),
+            propellantUsedKg: Math.round((1 - g.fuel / 100) * propellantBudgetKg),
+            outcomeType: 'overburn',
+            outcomeSummary: 'Rocket flew past the Target Orbit Zone!',
+            launchEfficiencyScore: 52,
+          });
+        } else if (g.hull <= 0 || (g.fuel <= 0 && g.altitude < 72)) {
+          g.phase = 'crashed';
+          g.boosting = false;
+          audioSynth.playAlert();
+          setPhase('crashed');
+          setIsBoosting(false);
+          setBannerHint(g.hull <= 0 ? 'TOO MUCH TURBULENCE! DODGE STORM CLOUDS!' : 'OUT OF FUEL! GRAB GOLD RINGS TO REFUEL!');
+          onUpdateBurnState({
+            status: 'failed',
+            throttlePct: 0,
+            burnDurationSec: 20,
+            targetDeltaVKms,
+            deliveredDeltaVKms: Number((targetDeltaVKms * 0.6).toFixed(2)),
+            propellantUsedKg: propellantBudgetKg,
+            outcomeType: 'underburn',
+            outcomeSummary: g.hull <= 0 ? 'Wind shear shook the rocket off course.' : 'Fuel ran out before orbit!',
+            launchEfficiencyScore: 40,
           });
         }
-        return next;
-      });
-    }, 60);
 
-    return () => clearInterval(timer);
-  }, [telemetry.phase, selectedRocket, selectedObjective.targetAltitudeKm, onUpdateBurnState]);
-
-  // Keyboard Flight Controls (W/S Throttle, A/D Pitch, Space Liftoff / SECO)
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-      const t = telemetryRef.current;
-
-      if (e.code === 'Space') {
-        e.preventDefault();
-        if (t.phase === 'prelaunch') handleLiftoff();
-        else if (t.phase === 'ascent') handleExecuteSeco();
-        return;
+        // Sync React HUD state gently
+        setAltitudePct(Math.min(100, Math.round(g.altitude)));
+        setFuelPct(Math.round(g.fuel));
+        setHullSafetyPct(Math.round(g.hull));
+        setRingsCollected(g.ringsCollected);
+        setScore(g.score);
       }
 
-      if (t.phase !== 'ascent') return;
+      // Update Particles
+      g.particles = g.particles
+        .map((p) => ({
+          ...p,
+          x: p.x + p.vx,
+          y: p.y + p.vy,
+          life: p.life - 1,
+        }))
+        .filter((p) => p.life > 0);
 
-      if (e.key === 'ArrowUp' || e.key.toLowerCase() === 'w') {
-        e.preventDefault();
-        setTelemetry((p) => ({ ...p, throttlePct: Math.min(100, p.throttlePct + 5) }));
-      } else if (e.key === 'ArrowDown' || e.key.toLowerCase() === 's') {
-        e.preventDefault();
-        setTelemetry((p) => ({ ...p, throttlePct: Math.max(0, p.throttlePct - 5) }));
-      } else if (e.key === 'ArrowRight' || e.key.toLowerCase() === 'd') {
-        e.preventDefault();
-        setTelemetry((p) => ({ ...p, pitchDeg: Math.max(0, p.pitchDeg - 4) }));
-      } else if (e.key === 'ArrowLeft' || e.key.toLowerCase() === 'a') {
-        e.preventDefault();
-        setTelemetry((p) => ({ ...p, pitchDeg: Math.min(90, p.pitchDeg + 4) }));
-      }
-    };
-
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [handleLiftoff, handleExecuteSeco]);
-
-  // Render Live HTML5 Canvas Ascent Telemetry Viewport
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const w = canvas.width;
-    const h = canvas.height;
-    const t = telemetry;
-
-    // Sky to Space Altitude Gradient
-    const spaceFactor = Math.min(1, t.altitudeKm / 120);
-    const skyGrad = ctx.createLinearGradient(0, 0, 0, h);
-    skyGrad.addColorStop(0, '#02050e');
-    skyGrad.addColorStop(0.55, spaceFactor > 0.6 ? '#050b18' : '#0a1d3a');
-    skyGrad.addColorStop(1, spaceFactor > 0.8 ? '#0a1628' : '#0f365c');
-    ctx.fillStyle = skyGrad;
-    ctx.fillRect(0, 0, w, h);
-
-    // Subtle Coordinate Grid
-    ctx.strokeStyle = 'rgba(148, 163, 184, 0.08)';
-    ctx.lineWidth = 1;
-    for (let x = 0; x < w; x += 60) {
-      ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, h);
-      ctx.stroke();
-    }
-    for (let y = 0; y < h; y += 45) {
-      ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(w, y);
-      ctx.stroke();
-    }
-
-    // Viewport Scale Mapping: Downrange 0..550 km, Altitude 0..190 km
-    const maxDr = Math.max(520, t.downrangeKm + 140);
-    const maxAlt = Math.max(185, t.altitudeKm + 40);
-    const mapX = (dr: number) => 55 + (dr / maxDr) * (w - 95);
-    const mapY = (alt: number) => h - 38 - (alt / maxAlt) * (h - 70);
-
-    // Max-Q Atmospheric Turbulence Zone Band (12 km - 32 km)
-    const maxQTopY = mapY(32);
-    const maxQBotY = mapY(12);
-    ctx.fillStyle = t.dynamicPressureKpa > 34 ? 'rgba(244, 63, 94, 0.16)' : 'rgba(245, 158, 11, 0.09)';
-    ctx.fillRect(0, maxQTopY, w, maxQBotY - maxQTopY);
-    ctx.strokeStyle = 'rgba(245, 158, 11, 0.32)';
-    ctx.setLineDash([5, 5]);
-    ctx.beginPath();
-    ctx.moveTo(0, maxQTopY);
-    ctx.lineTo(w, maxQTopY);
-    ctx.moveTo(0, maxQBotY);
-    ctx.lineTo(w, maxQBotY);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.fillStyle = 'rgba(251, 191, 36, 0.78)';
-    ctx.font = '10px monospace';
-    ctx.fillText('MAX-Q AERODYNAMIC STRESS CORRIDOR (12–32 km · THROTTLE DOWN)', 12, maxQTopY - 4);
-
-    // Karman Line (100 km Space Boundary)
-    const karmanY = mapY(100);
-    ctx.strokeStyle = 'rgba(34, 211, 238, 0.28)';
-    ctx.setLineDash([4, 6]);
-    ctx.beginPath();
-    ctx.moveTo(0, karmanY);
-    ctx.lineTo(w, karmanY);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.fillStyle = 'rgba(34, 211, 238, 0.72)';
-    ctx.fillText('KÁRMÁN LINE (100 km · SPACE THRESHOLD)', 12, karmanY - 5);
-
-    // Earth Horizon Surface Band
-    ctx.fillStyle = '#0c4a6e';
-    ctx.fillRect(0, h - 38, w, 38);
-    ctx.strokeStyle = '#38bdf8';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(0, h - 38);
-    ctx.lineTo(w, h - 38);
-    ctx.stroke();
-
-    // Launchpad Tower
-    ctx.fillStyle = '#64748b';
-    ctx.fillRect(46, h - 62, 6, 24);
-    ctx.fillRect(42, h - 62, 12, 3);
-
-    // Target Gravity-Turn Reference Arc (Dashed Cyan)
-    ctx.strokeStyle = 'rgba(6, 182, 212, 0.55)';
-    ctx.lineWidth = 2;
-    ctx.setLineDash([6, 6]);
-    ctx.beginPath();
-    for (let dr = 0; dr <= maxDr; dr += 12) {
-      const targetAlt = 155 * (1 - Math.exp(-dr / 245));
-      const x = mapX(dr);
-      const y = mapY(targetAlt);
-      if (dr === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    }
-    ctx.stroke();
-    ctx.setLineDash([]);
-
-    // Actual Rocket Flight Path Breadcrumb Trail
-    if (t.trajectoryPoints.length > 1) {
-      ctx.strokeStyle = t.phase === 'failed' ? '#f43f5e' : '#34d399';
-      ctx.lineWidth = 2.5;
-      ctx.beginPath();
-      t.trajectoryPoints.forEach((pt, idx) => {
-        const px = mapX(pt.downrangeKm);
-        const py = mapY(pt.altitudeKm);
-        if (idx === 0) ctx.moveTo(px, py);
-        else ctx.lineTo(px, py);
-      });
-      ctx.stroke();
-    }
-
-    // Rocket Sprite at Current Position
-    const rx = mapX(t.downrangeKm);
-    const ry = mapY(t.altitudeKm);
-
-    ctx.save();
-    ctx.translate(rx, ry);
-    // Canvas 0 rad points right (+X), -PI/2 points straight up (-Y).
-    // pitchDeg=90 => point straight up (-PI/2); pitchDeg=0 => point right (0)
-    const canvasRotRad = -(t.pitchDeg * Math.PI) / 180;
-    ctx.rotate(canvasRotRad);
-
-    // Exhaust Plume if ascending and throttle > 0
-    if (t.phase === 'ascent' && t.throttlePct > 0 && t.fuelRemainingKg > 0) {
-      const flameLen = (14 + (t.throttlePct / 100) * 34) * (0.88 + (Math.sin(t.timeSec * 30) + 1) * 0.14);
-      const grad = ctx.createLinearGradient(-8, 0, -8 - flameLen, 0);
-      grad.addColorStop(0, '#fef08a');
-      grad.addColorStop(0.4, '#f59e0b');
-      grad.addColorStop(1, 'rgba(239, 68, 68, 0)');
-      ctx.fillStyle = grad;
-      ctx.beginPath();
-      ctx.moveTo(-10, -5);
-      ctx.lineTo(-10 - flameLen, 0);
-      ctx.lineTo(-10, 5);
-      ctx.closePath();
-      ctx.fill();
-    }
-
-    // Rocket Body & Fairing (pointing +X in rotated frame)
-    ctx.fillStyle = '#e2e8f0';
-    ctx.fillRect(-10, -4.5, 22, 9);
-    // Nosecone
-    ctx.fillStyle = '#22d3ee';
-    ctx.beginPath();
-    ctx.moveTo(12, -4.5);
-    ctx.lineTo(22, 0);
-    ctx.lineTo(12, 4.5);
-    ctx.closePath();
-    ctx.fill();
-    // Engine Bell & Fins
-    ctx.fillStyle = '#475569';
-    ctx.fillRect(-13, -3.5, 4, 7);
-    ctx.fillStyle = '#f59e0b';
-    ctx.fillRect(-10, -7, 5, 2.5);
-    ctx.fillRect(-10, 4.5, 5, 2.5);
-
-    // Max-Q Shock Cone Aura
-    if (t.dynamicPressureKpa > 26 && t.phase === 'ascent') {
-      ctx.strokeStyle = t.dynamicPressureKpa > 38 ? 'rgba(244,63,94,0.85)' : 'rgba(251,191,36,0.7)';
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.arc(16, 0, 12, -1.0, 1.0);
-      ctx.stroke();
-    }
-
-    ctx.restore();
-
-    // Target Pitch Ghost Arrow around Rocket
-    if (t.phase === 'ascent') {
-      const targetRot = -(t.targetPitchDeg * Math.PI) / 180;
+      // --- RENDER 60FPS ARCADE CANVAS ---
       ctx.save();
-      ctx.translate(rx, ry);
-      ctx.rotate(targetRot);
-      ctx.strokeStyle = 'rgba(34, 211, 238, 0.7)';
-      ctx.setLineDash([3, 3]);
+      if (g.shakeFrames > 0) {
+        g.shakeFrames -= 1;
+        ctx.translate((Math.random() - 0.5) * 8, (Math.random() - 0.5) * 8);
+      }
+
+      // Sky-to-Space Gradient transitions dynamically with altitude!
+      const spaceBlend = Math.min(1, g.altitude / 55);
+      const skyGrad = ctx.createLinearGradient(0, 0, 0, h);
+      skyGrad.addColorStop(0, '#020617');
+      skyGrad.addColorStop(0.55, spaceBlend > 0.5 ? '#070e26' : '#0f2854');
+      skyGrad.addColorStop(1, spaceBlend > 0.7 ? '#09142f' : '#1e3a8a');
+      ctx.fillStyle = skyGrad;
+      ctx.fillRect(0, 0, w, h);
+
+      // Twinkling Starfield
+      g.stars.forEach((s) => {
+        ctx.fillStyle = `rgba(255,255,255,${0.25 + spaceBlend * 0.7})`;
+        ctx.beginPath();
+        ctx.arc(s.x * w, ((s.y * h + g.altitude * 4) % h), s.r, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      // Camera view maps a rolling 42-altitude window around the rocket
+      const camBottomAlt = Math.max(0, g.altitude - 10);
+      const altToScreenY = (alt: number) => h - 60 - ((alt - camBottomAlt) / 42) * (h - 90);
+      const laneToScreenX = (lx: number) => w / 2 + lx * (w * 0.36);
+
+      // Green Target Orbit Zone Band (Altitude 78..104)
+      const zoneTopY = altToScreenY(104);
+      const zoneBotY = altToScreenY(78);
+      if (zoneBotY > 0 && zoneTopY < h) {
+        ctx.fillStyle = 'rgba(16, 185, 129, 0.22)';
+        ctx.fillRect(0, zoneTopY, w, zoneBotY - zoneTopY);
+        ctx.strokeStyle = '#34d399';
+        ctx.lineWidth = 2.5;
+        ctx.setLineDash([8, 6]);
+        ctx.beginPath();
+        ctx.moveTo(0, zoneBotY);
+        ctx.lineTo(w, zoneBotY);
+        ctx.moveTo(0, zoneTopY);
+        ctx.lineTo(w, zoneTopY);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = '#6ee7b7';
+        ctx.font = 'bold 13px sans-serif';
+        ctx.fillText('TARGET ORBIT ZONE — DEPLOY SATELLITE HERE!', 22, Math.max(22, zoneBotY - 10));
+      }
+
+      // Glowing Curved Green Flight Corridor
+      ctx.strokeStyle = 'rgba(34, 211, 238, 0.25)';
+      ctx.lineWidth = 105;
+      ctx.lineCap = 'round';
       ctx.beginPath();
-      ctx.moveTo(24, 0);
-      ctx.lineTo(44, 0);
+      for (let a = Math.floor(camBottomAlt); a <= camBottomAlt + 45; a += 1.5) {
+        const px = laneToScreenX(corridorCenterX(a));
+        const py = altToScreenY(a);
+        if (a === Math.floor(camBottomAlt)) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+
+      ctx.strokeStyle = '#10b981';
+      ctx.lineWidth = 3;
+      ctx.setLineDash([10, 8]);
+      ctx.beginPath();
+      for (let a = Math.floor(camBottomAlt); a <= camBottomAlt + 45; a += 1.5) {
+        const px = laneToScreenX(corridorCenterX(a));
+        const py = altToScreenY(a);
+        if (a === Math.floor(camBottomAlt)) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
       ctx.stroke();
       ctx.setLineDash([]);
-      ctx.restore();
-    }
-  }, [telemetry]);
 
-  const velRatioPct = Math.min(125, Math.round((telemetry.velocityKms / Math.max(0.1, telemetry.targetVelocityKms)) * 100));
-  const inSecoWindow = telemetry.phase === 'ascent' && velRatioPct >= 94 && velRatioPct <= 107 && telemetry.altitudeKm >= 65;
-  const inMaxQAlert = telemetry.phase === 'ascent' && telemetry.dynamicPressureKpa > 34;
+      // Draw Launchpad Ground at Altitude 0
+      const padY = altToScreenY(0);
+      if (padY < h + 40) {
+        ctx.fillStyle = '#1e293b';
+        ctx.fillRect(0, padY + 26, w, h - padY);
+        ctx.fillStyle = '#334155';
+        ctx.fillRect(w / 2 - 70, padY + 14, 140, 14);
+        // Launch Tower
+        ctx.fillStyle = '#64748b';
+        ctx.fillRect(w / 2 - 64, padY - 58, 12, 72);
+        ctx.fillRect(w / 2 - 52, padY - 46, 30, 5);
+      }
+
+      // Draw Wind Shear Storm Clouds
+      g.clouds.forEach((c) => {
+        const cy = altToScreenY(c.progressY);
+        if (cy < -30 || cy > h + 30) return;
+        const cx = laneToScreenX(c.laneX);
+        ctx.fillStyle = 'rgba(244, 63, 94, 0.25)';
+        ctx.beginPath();
+        ctx.arc(cx, cy, 26, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#fb7185';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.fillStyle = '#fecdd3';
+        ctx.font = 'bold 10px sans-serif';
+        ctx.fillText('TURBULENCE!', cx - 34, cy + 4);
+      });
+
+      // Draw Gold Bonus Fuel Rings
+      g.rings.forEach((ring) => {
+        if (ring.collected) return;
+        const ry = altToScreenY(ring.progressY);
+        if (ry < -30 || ry > h + 30) return;
+        const rx = laneToScreenX(ring.laneX);
+        ctx.strokeStyle = '#fbbf24';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.ellipse(rx, ry, 20, 9, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(251, 191, 36, 0.25)';
+        ctx.fill();
+        ctx.fillStyle = '#fef08a';
+        ctx.font = 'bold 10px sans-serif';
+        ctx.fillText('+FUEL', rx - 15, ry - 13);
+      });
+
+      // Rocket Position on Screen
+      const rx = laneToScreenX(g.rocketX);
+      const ry = altToScreenY(g.altitude);
+
+      // Draw Particles around Rocket / Confetti
+      g.particles.forEach((p) => {
+        ctx.fillStyle = p.color;
+        ctx.globalAlpha = Math.max(0, p.life / p.maxLife);
+        ctx.beginPath();
+        ctx.arc(rx + p.x - (g.phase === 'deployed' ? 0 : g.rocketX * (w * 0.36) - (rx - w / 2)), ry + p.y, p.size, 0, Math.PI * 2);
+        ctx.fill();
+      });
+      ctx.globalAlpha = 1;
+
+      // Draw Colorful Rocket Sprite
+      ctx.save();
+      ctx.translate(rx, ry);
+      ctx.rotate(g.rocketVx * 2.4);
+
+      if (g.phase === 'flying' && g.boosting) {
+        // Roaring flame plume
+        ctx.fillStyle = '#f97316';
+        ctx.beginPath();
+        ctx.moveTo(-10, 22);
+        ctx.lineTo(10, 22);
+        ctx.lineTo(0, 48 + Math.random() * 14);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = '#fef08a';
+        ctx.beginPath();
+        ctx.moveTo(-5, 22);
+        ctx.lineTo(5, 22);
+        ctx.lineTo(0, 36 + Math.random() * 8);
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      // Rocket Fins
+      ctx.fillStyle = '#ef4444';
+      ctx.beginPath();
+      ctx.moveTo(-11, 8);
+      ctx.lineTo(-20, 22);
+      ctx.lineTo(-10, 20);
+      ctx.closePath();
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(11, 8);
+      ctx.lineTo(20, 22);
+      ctx.lineTo(10, 20);
+      ctx.closePath();
+      ctx.fill();
+
+      // Rocket Fuselage
+      ctx.fillStyle = '#f8fafc';
+      ctx.beginPath();
+      ctx.roundRect(-11, -18, 22, 38, 6);
+      ctx.fill();
+      // Nose Cone
+      ctx.fillStyle = '#ef4444';
+      ctx.beginPath();
+      ctx.moveTo(-11, -14);
+      ctx.lineTo(11, -14);
+      ctx.lineTo(0, -34);
+      ctx.closePath();
+      ctx.fill();
+      // Window Porthole
+      ctx.fillStyle = '#38bdf8';
+      ctx.beginPath();
+      ctx.arc(0, -4, 5.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#0f172a';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      ctx.restore();
+      ctx.restore();
+
+      raf = requestAnimationFrame(tick);
+    };
+
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [onUpdateBurnState, propellantBudgetKg, targetDeltaVKms]);
+
+  const handleCanvasPointer = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const g = gameRef.current;
+    if (g.phase !== 'flying') return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const normX = ((e.clientX - rect.left) / rect.width - 0.5) / 0.36;
+    g.pointerTargetX = Math.max(-0.9, Math.min(0.9, normX));
+  };
+
+  const inDeployWindow = phase === 'flying' && altitudePct >= 78 && altitudePct <= 104;
 
   return (
     <div className="space-y-4">
-      {/* Segment Header */}
-      <div className="flex flex-wrap items-center justify-between gap-4 border border-slate-800 bg-[#080d19] p-4 shadow-xl">
+      {/* Top Arcade Header */}
+      <div className="flex flex-wrap items-center justify-between gap-4 border border-amber-500/30 bg-[#091122] p-4 shadow-xl">
         <div>
-          <div className="flex items-center gap-2">
-            <span className="border border-amber-500/50 bg-amber-950/40 px-2 py-0.5 font-mono-tab text-[10px] font-bold uppercase tracking-wider text-amber-300">
-              NASA Segment 1: Active Ascent &amp; SECO Insertion
-            </span>
-            <span className="text-xs text-slate-400">· Real-Time Gravity Turn, Max-Q &amp; Engine Cutoff</span>
+          <div className="flex items-center gap-2 text-xs font-bold text-amber-300">
+            <Rocket className="h-4 w-4" />
+            <span>Mission Phase 1 · Launch Arcade</span>
           </div>
-          <h2 className="mt-1 font-display text-xl md:text-2xl font-bold text-white">
-            Pilot Launch Ascent, Survive Max-Q &amp; Hit Orbital SECO Cutoff
+          <h2 className="mt-1 font-display text-2xl font-black text-white">
+            Rocket Boost Ascent!
           </h2>
-          <p className="mt-1 text-xs text-slate-300">
-            Steer pitch along the dashed gravity-turn curve, throttle down through Max-Q aerodynamic stress, and cut engines (<strong className="text-emerald-300">SECO</strong>) inside the 94%–107% velocity gate.
+          <p className="mt-0.5 text-xs text-slate-300">
+            Steer inside the glowing green flight corridor, collect gold fuel rings, and deploy your satellite in the Green Orbit Zone!
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2.5">
           <button
             type="button"
             onClick={onPrevSegment}
-            className="border border-slate-700 bg-slate-800/80 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-700 cursor-pointer"
+            className="flex items-center gap-1 border border-slate-700 bg-slate-800 px-3.5 py-2 text-xs font-bold text-slate-200 hover:bg-slate-700 cursor-pointer"
           >
-            ← Setup
+            <ArrowLeft className="h-3.5 w-3.5" />
+            <span>Setup</span>
           </button>
           <button
             type="button"
             onClick={onProceedToSpace}
-            disabled={architectMode !== 'sandbox' && burnState.status !== 'completed'}
-            className={`flex items-center gap-2 px-5 py-2 text-xs font-bold transition-all cursor-pointer ${
-              architectMode === 'sandbox' || burnState.status === 'completed'
-                ? 'bg-cyan-500 text-slate-950 hover:bg-cyan-400 shadow-lg shadow-cyan-500/20'
-                : 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700'
+            className={`flex items-center gap-2 px-5 py-2.5 text-xs font-black transition-all cursor-pointer ${
+              phase === 'deployed' || burnState.outcomeType === 'nominal'
+                ? 'bg-emerald-400 text-slate-950 hover:bg-emerald-300 shadow-lg shadow-emerald-500/25'
+                : 'bg-cyan-500 text-slate-950 hover:bg-cyan-400'
             }`}
           >
-            <span>{architectMode === 'sandbox' ? 'Segment 2: Space (Sandbox Open)' : 'Segment 2: Space Segment'}</span>
+            <span>Next: Space Adventure</span>
             <ArrowRight className="h-4 w-4" />
           </button>
         </div>
       </div>
 
-      {/* Collapsible Pre-Launch Vehicle & Window Configuration Strip */}
-      <div className="border border-slate-800 bg-[#080d19]">
-        <button
-          type="button"
-          onClick={() => setShowPrelaunchConfig((v) => !v)}
-          className="w-full flex items-center justify-between px-4 py-2.5 text-left hover:bg-slate-900/50 cursor-pointer"
-        >
-          <div className="flex flex-wrap items-center gap-3 text-xs">
-            <Rocket className="h-4 w-4 text-cyan-400" />
-            <span className="font-display font-bold text-white uppercase tracking-wider">
-              Launch Vehicle &amp; Window: {selectedRocket.name}
-            </span>
-            <span className="font-mono-tab text-[11px] text-slate-400">
-              Wet Mass: <strong className={isPayloadTooHeavy ? 'text-rose-400' : 'text-cyan-300'}>{totalPayloadMassKg}/{selectedRocket.maxPayloadKg} kg</strong>
-              {' · '}Target Δv: <strong className="text-amber-300">{targetDeltaVKms} km/s</strong>
-              {' · '}TWR: <strong className={isTwrTooLow ? 'text-rose-400' : 'text-emerald-400'}>{rocketPerf.thrustToWeightRatio}x</strong>
-            </span>
+      {/* Big 3-Word Action Prompt Banner */}
+      <div
+        className={`border px-4 py-3 flex flex-wrap items-center justify-between gap-3 ${
+          inDeployWindow
+            ? 'border-emerald-400 bg-emerald-950/50 text-emerald-200'
+            : phase === 'crashed'
+              ? 'border-rose-500 bg-rose-950/50 text-rose-200'
+              : phase === 'deployed'
+                ? 'border-cyan-400 bg-cyan-950/40 text-cyan-200'
+                : 'border-amber-400/50 bg-amber-950/30 text-amber-200'
+        }`}
+      >
+        <div className="flex items-center gap-2.5 font-display text-base font-black tracking-wide">
+          {phase === 'deployed' ? <Trophy className="h-5 w-5 text-amber-300" /> : <Flame className="h-5 w-5" />}
+          <span>{bannerHint}</span>
+        </div>
+        <div className="flex items-center gap-4 text-xs font-bold font-mono-tab">
+          <span className="text-amber-300">Gold Rings: {ringsCollected}/5</span>
+          <span className="text-cyan-300">Score: {score}</span>
+        </div>
+      </div>
+
+      {/* Main Split: Arcade Sky Canvas (8 cols) + Big Touch/Button Controls & Rocket Selector (4 cols) */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+        <div className="lg:col-span-8 border border-slate-800 bg-[#040814] relative overflow-hidden">
+          <canvas
+            ref={canvasRef}
+            width={760}
+            height={460}
+            onPointerMove={handleCanvasPointer}
+            onPointerDown={handleCanvasPointer}
+            onPointerLeave={() => {
+              gameRef.current.pointerTargetX = null;
+            }}
+            className="w-full h-[380px] sm:h-[440px] object-cover block cursor-crosshair touch-none"
+          />
+
+          {/* Bottom Arcade Control Strip */}
+          <div className="border-t border-slate-800 bg-[#080d19] p-3 flex flex-wrap items-center justify-between gap-2.5">
+            {phase === 'pad' && (
+              <button
+                type="button"
+                onClick={startLaunch}
+                disabled={isPayloadTooHeavy}
+                className="flex-1 flex items-center justify-center gap-2 bg-gradient-to-r from-amber-400 to-orange-500 py-3 px-6 text-sm font-black text-slate-950 hover:from-amber-300 hover:to-orange-400 disabled:opacity-40 cursor-pointer"
+              >
+                <Rocket className="h-5 w-5" />
+                <span>IGNITE &amp; LAUNCH! (SPACE)</span>
+              </button>
+            )}
+
+            {phase === 'flying' && (
+              <>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onPointerDown={() => {
+                      gameRef.current.steerLeft = true;
+                    }}
+                    onPointerUp={() => {
+                      gameRef.current.steerLeft = false;
+                    }}
+                    onPointerLeave={() => {
+                      gameRef.current.steerLeft = false;
+                    }}
+                    className="border border-slate-700 bg-slate-800 px-4 py-3 text-xs font-black text-white hover:bg-slate-700 cursor-pointer select-none"
+                  >
+                    ◀ STEER LEFT
+                  </button>
+                  <button
+                    type="button"
+                    onPointerDown={() => {
+                      gameRef.current.steerRight = true;
+                    }}
+                    onPointerUp={() => {
+                      gameRef.current.steerRight = false;
+                    }}
+                    onPointerLeave={() => {
+                      gameRef.current.steerRight = false;
+                    }}
+                    className="border border-slate-700 bg-slate-800 px-4 py-3 text-xs font-black text-white hover:bg-slate-700 cursor-pointer select-none"
+                  >
+                    STEER RIGHT ▶
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  onPointerDown={() => {
+                    gameRef.current.boosting = true;
+                    setIsBoosting(true);
+                  }}
+                  onPointerUp={() => {
+                    gameRef.current.boosting = false;
+                    setIsBoosting(false);
+                  }}
+                  onPointerLeave={() => {
+                    gameRef.current.boosting = false;
+                    setIsBoosting(false);
+                  }}
+                  className={`px-6 py-3 text-xs font-black uppercase cursor-pointer select-none ${
+                    isBoosting ? 'bg-orange-500 text-slate-950' : 'bg-amber-400 text-slate-950 hover:bg-amber-300'
+                  }`}
+                >
+                  HOLD TO BOOST
+                </button>
+
+                <button
+                  type="button"
+                  onClick={deploySatellite}
+                  className={`flex-1 py-3 px-5 text-xs font-black uppercase cursor-pointer transition-all ${
+                    inDeployWindow
+                      ? 'bg-emerald-400 text-slate-950 hover:bg-emerald-300 ring-2 ring-emerald-200'
+                      : 'border border-cyan-500/50 bg-cyan-950/60 text-cyan-200 hover:bg-cyan-900/60'
+                  }`}
+                >
+                  {inDeployWindow ? 'DEPLOY SATELLITE NOW! (SPACE)' : 'DEPLOY EARLY (WAIT FOR GREEN!)'}
+                </button>
+              </>
+            )}
+
+            {(phase === 'deployed' || phase === 'crashed') && (
+              <>
+                <button
+                  type="button"
+                  onClick={resetLaunchpad}
+                  className="flex items-center gap-2 border border-slate-700 bg-slate-800 px-5 py-3 text-xs font-bold text-white hover:bg-slate-700 cursor-pointer"
+                >
+                  <RotateCcw className="h-4 w-4" />
+                  <span>Play Launch Again</span>
+                </button>
+                {phase === 'deployed' && (
+                  <button
+                    type="button"
+                    onClick={onProceedToSpace}
+                    className="flex-1 flex items-center justify-center gap-2 bg-emerald-400 py-3 px-6 text-sm font-black text-slate-950 hover:bg-emerald-300 cursor-pointer"
+                  >
+                    <Sparkles className="h-4 w-4" />
+                    <span>FLY IN SPACE! →</span>
+                  </button>
+                )}
+              </>
+            )}
           </div>
-          <span className="flex items-center gap-1 font-mono-tab text-[10px] text-cyan-300">
-            {showPrelaunchConfig ? 'Hide Selector' : 'Change Rocket / Window'}
-            {showPrelaunchConfig ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-          </span>
-        </button>
+        </div>
 
-        {showPrelaunchConfig && (
-          <div className="p-4 pt-2 border-t border-slate-800 space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-              {NASA_ROCKETS.map((rocket) => {
-                const isSelected = rocket.id === selectedRocket.id;
-                const perf = calculateRocketDeltaV(rocket, totalPayloadMassKg, 1.0);
-                const tooHeavy = totalPayloadMassKg > rocket.maxPayloadKg;
+        {/* Right: Visual Gauges + Rocket Garage */}
+        <div className="lg:col-span-4 space-y-4">
+          {/* 3 Visual Arcade Bars */}
+          <div className="border border-slate-800 bg-[#080d19] p-4 space-y-4">
+            <h3 className="font-display text-sm font-black uppercase tracking-wider text-white flex items-center gap-2">
+              <Gauge className="h-4 w-4 text-cyan-400" />
+              Live Flight Bars
+            </h3>
 
+            {/* Height to Orbit Bar */}
+            <div className="space-y-1">
+              <div className="flex justify-between text-xs font-bold">
+                <span className="text-slate-300">Height to Space</span>
+                <span className={inDeployWindow ? 'text-emerald-400' : 'text-cyan-300'}>
+                  {altitudePct}% {inDeployWindow ? '· IN ORBIT ZONE!' : ''}
+                </span>
+              </div>
+              <div className="relative h-4 bg-slate-900 border border-slate-800 overflow-hidden">
+                <div
+                  className="absolute top-0 bottom-0 bg-emerald-500/35 border-x border-emerald-400"
+                  style={{ left: '78%', width: '22%' }}
+                />
+                <div
+                  className={`h-full transition-all duration-75 ${
+                    inDeployWindow ? 'bg-emerald-400' : 'bg-cyan-400'
+                  }`}
+                  style={{ width: `${Math.min(100, altitudePct)}%` }}
+                />
+              </div>
+            </div>
+
+            {/* Fuel Tank Bar */}
+            <div className="space-y-1">
+              <div className="flex justify-between text-xs font-bold">
+                <span className="text-slate-300">Boost Fuel</span>
+                <span className={fuelPct < 25 ? 'text-rose-400' : 'text-amber-300'}>{fuelPct}%</span>
+              </div>
+              <div className="h-3.5 bg-slate-900 border border-slate-800 overflow-hidden">
+                <div
+                  className={`h-full transition-all duration-75 ${
+                    fuelPct < 25 ? 'bg-rose-500' : 'bg-amber-400'
+                  }`}
+                  style={{ width: `${fuelPct}%` }}
+                />
+              </div>
+            </div>
+
+            {/* Rocket Hull Safety Bar */}
+            <div className="space-y-1">
+              <div className="flex justify-between text-xs font-bold">
+                <span className="text-slate-300">Rocket Stability</span>
+                <span className={hullSafetyPct < 40 ? 'text-rose-400' : 'text-emerald-400'}>
+                  {hullSafetyPct}%
+                </span>
+              </div>
+              <div className="h-3.5 bg-slate-900 border border-slate-800 overflow-hidden">
+                <div
+                  className={`h-full transition-all duration-75 ${
+                    hullSafetyPct < 40 ? 'bg-rose-500' : 'bg-emerald-400'
+                  }`}
+                  style={{ width: `${hullSafetyPct}%` }}
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Visual Rocket Selector */}
+          <div className="border border-slate-800 bg-[#080d19] p-4 space-y-2.5">
+            <div className="flex items-center justify-between">
+              <h3 className="font-display text-sm font-black uppercase tracking-wider text-white">
+                Pick Your Rocket
+              </h3>
+              <span className={`text-xs font-bold ${isPayloadTooHeavy ? 'text-rose-400' : 'text-emerald-400'}`}>
+                {isPayloadTooHeavy ? 'Too Small!' : 'Fits Craft ✓'}
+              </span>
+            </div>
+
+            <div className="space-y-2">
+              {NASA_ROCKETS.map((r) => {
+                const selected = r.id === selectedRocket.id;
+                const fits = totalPayloadMassKg <= r.maxPayloadKg;
+                const nick = ROCKET_NICKNAMES[r.id] || {
+                  label: r.name,
+                  powerText: `Lifts up to ${r.maxPayloadKg} kg`,
+                };
                 return (
                   <button
-                    key={rocket.id}
+                    key={r.id}
                     type="button"
-                    onClick={() => onSelectRocket(rocket)}
-                    disabled={telemetry.phase === 'ascent'}
-                    className={`flex flex-col justify-between text-left border p-3 transition-all cursor-pointer ${
-                      isSelected
-                        ? 'border-cyan-400 bg-cyan-950/30'
-                        : 'border-slate-800 bg-slate-900/60 hover:border-slate-700'
-                    } ${tooHeavy ? 'opacity-75 border-rose-900/60' : ''}`}
+                    disabled={phase === 'flying'}
+                    onClick={() => onSelectRocket(r)}
+                    className={`w-full border p-3 text-left transition-all cursor-pointer flex items-center justify-between ${
+                      selected
+                        ? 'border-amber-400 bg-amber-950/30'
+                        : 'border-slate-800 bg-slate-900/50 hover:border-slate-700'
+                    } disabled:opacity-50`}
                   >
                     <div>
-                      <div className="flex items-center justify-between font-mono-tab text-[10px]">
-                        <span className="text-slate-400 uppercase">{rocket.tier}</span>
-                        <span className="text-amber-300 font-bold">${rocket.costM}M</span>
-                      </div>
-                      <div className="mt-1 font-display text-sm font-bold text-white">{rocket.name}</div>
-                      <p className="mt-1 text-[11px] text-slate-300">{rocket.description}</p>
+                      <div className="font-display text-xs font-bold text-white">{nick.label}</div>
+                      <div className="text-[11px] text-slate-400">{nick.powerText}</div>
                     </div>
-                    <div className="mt-2 pt-2 border-t border-slate-800/80 grid grid-cols-2 gap-1 font-mono-tab text-[10px]">
-                      <span className={tooHeavy ? 'text-rose-400 font-bold' : 'text-slate-300'}>
-                        Max: {rocket.maxPayloadKg} kg
-                      </span>
-                      <span className="text-right text-emerald-400 font-bold">
-                        Δv: {perf.totalDeltaVKms} km/s
-                      </span>
-                    </div>
+                    <span
+                      className={`text-[10px] font-black px-2 py-0.5 ${
+                        fits ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300'
+                      }`}
+                    >
+                      {fits ? 'FITS ✓' : 'TOO HEAVY'}
+                    </span>
                   </button>
                 );
               })}
             </div>
 
-            {/* Compact Launch Window Selector */}
-            <div className="border border-slate-800 bg-slate-950/60 p-3 flex flex-wrap items-center justify-between gap-4">
-              <div className="flex items-center gap-2 text-xs">
-                <Calendar className="h-4 w-4 text-amber-400" />
-                <span className="font-bold text-white">Departure Epoch Offset ({launchWindow.targetPlanet}):</span>
-                <span className="font-mono-tab text-amber-300">
-                  {departureDayOffset === 0 ? 'Day 0 (Optimal)' : `${departureDayOffset > 0 ? `+${departureDayOffset}` : departureDayOffset}d`}
-                </span>
-              </div>
-              <input
-                type="range"
-                min={-30}
-                max={30}
-                step={1}
-                value={departureDayOffset}
-                disabled={telemetry.phase === 'ascent'}
-                onChange={(e) => setDepartureDayOffset(parseInt(e.target.value, 10))}
-                aria-label="Departure Date Offset"
-                className="w-48 accent-amber-400 h-1.5 bg-slate-800 cursor-pointer"
-              />
-              <span className="font-mono-tab text-[11px] text-slate-300">
-                C3: <strong className="text-amber-300">{launchWindow.c3EnergyKm2s2}</strong> · Penalty: <strong className={windowPenaltyDeltaVKms > 0 ? 'text-rose-400' : 'text-emerald-400'}>+{windowPenaltyDeltaVKms.toFixed(2)} km/s</strong>
-              </span>
+            <div className="pt-1 flex items-center gap-2 text-[11px] text-slate-400">
+              <ShieldCheck className="h-4 w-4 text-cyan-400 shrink-0" />
+              <span>Move mouse/touch over sky or hold Left/Right keys to steer!</span>
             </div>
-          </div>
-        )}
-      </div>
-
-      {/* Main Interactive Flight Director Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-        {/* Left 8 Cols: Live HTML5 Canvas Ascent Viewport */}
-        <div className="lg:col-span-8 border border-slate-800 bg-[#050914] flex flex-col">
-          <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 border-b border-slate-800 bg-[#080d19] font-mono-tab text-[11px]">
-            <div className="flex items-center gap-2">
-              <Compass className="h-4 w-4 text-cyan-400" />
-              <span className="font-bold text-white uppercase">Ascent Trajectory &amp; Gravity-Turn Viewport</span>
-              <span
-                className={`px-2 py-0.5 text-[10px] font-bold uppercase border ${
-                  telemetry.phase === 'ascent'
-                    ? inMaxQAlert
-                      ? 'border-rose-500/60 bg-rose-950/60 text-rose-300'
-                      : inSecoWindow
-                      ? 'border-emerald-500/60 bg-emerald-950/60 text-emerald-300'
-                      : 'border-amber-500/50 bg-amber-950/50 text-amber-300'
-                    : telemetry.phase === 'seco'
-                    ? 'border-emerald-500/50 bg-emerald-950/40 text-emerald-300'
-                    : telemetry.phase === 'failed'
-                    ? 'border-rose-500/60 bg-rose-950/50 text-rose-300'
-                    : 'border-slate-700 bg-slate-900 text-slate-300'
-                }`}
-              >
-                {telemetry.phase === 'ascent'
-                  ? inMaxQAlert
-                    ? '▲ MAX-Q HIGH STRESS — THROTTLE DOWN'
-                    : inSecoWindow
-                    ? '● SECO WINDOW OPEN — CUT ENGINES NOW'
-                    : '● ASCENT BURN ACTIVE'
-                  : telemetry.phase === 'seco'
-                  ? '✔ SECO ORBITAL INSERTION CONFIRMED'
-                  : telemetry.phase === 'failed'
-                  ? '✖ ASCENT ABORT / FAILURE'
-                  : 'PAD STANDBY — READY FOR IGNITION'}
-              </span>
-            </div>
-
-            <span className="text-slate-400">
-              T+ {telemetry.timeSec.toFixed(1)}s · Keys: W/S Throttle · A/D Pitch · Space Launch/SECO
-            </span>
-          </div>
-
-          <div className="relative">
-            <canvas
-              ref={canvasRef}
-              width={760}
-              height={360}
-              className="w-full h-auto block"
-            />
-
-            {/* Compact Telemetry Overlay Bar */}
-            <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 p-2.5 border-t border-slate-800 bg-[#070b16] font-mono-tab text-[11px]">
-              <div>
-                <span className="text-[9px] text-slate-500 block">ALTITUDE</span>
-                <strong className="text-cyan-300">{telemetry.altitudeKm.toFixed(1)} km</strong>
-              </div>
-              <div>
-                <span className="text-[9px] text-slate-500 block">VELOCITY</span>
-                <strong className={inSecoWindow ? 'text-emerald-400' : 'text-white'}>
-                  {telemetry.velocityKms.toFixed(2)} / {telemetry.targetVelocityKms} km/s
-                </strong>
-              </div>
-              <div>
-                <span className="text-[9px] text-slate-500 block">PITCH / TARGET</span>
-                <strong className={telemetry.flightPathErrorDeg > 18 ? 'text-rose-400' : 'text-cyan-300'}>
-                  {telemetry.pitchDeg.toFixed(0)}° (Aim {telemetry.targetPitchDeg.toFixed(0)}°)
-                </strong>
-              </div>
-              <div>
-                <span className="text-[9px] text-slate-500 block">DYNAMIC PRESS (Q)</span>
-                <strong className={telemetry.dynamicPressureKpa > 34 ? 'text-rose-400' : 'text-amber-300'}>
-                  {telemetry.dynamicPressureKpa} kPa
-                </strong>
-              </div>
-              <div>
-                <span className="text-[9px] text-slate-500 block">STAGE FUEL</span>
-                <strong className="text-slate-200">
-                  {Math.round((telemetry.fuelRemainingKg / Math.max(1, telemetry.fuelTotalKg)) * 100)}%
-                </strong>
-              </div>
-              <div>
-                <span className="text-[9px] text-slate-500 block">PROJ APOGEE</span>
-                <strong className="text-emerald-400">{telemetry.apoapsisProjectedKm} km</strong>
-              </div>
-            </div>
-          </div>
-
-          {/* Outcome / Failure Feedback Banner */}
-          {(burnState.status === 'completed' || burnState.status === 'failed' || telemetry.failureReason) && (
-            <div
-              className={`border-t p-3 text-xs flex items-center justify-between gap-3 ${
-                burnState.status === 'completed' && telemetry.phase !== 'failed'
-                  ? 'border-emerald-500/40 bg-emerald-950/30 text-emerald-200'
-                  : 'border-rose-500/40 bg-rose-950/30 text-rose-200'
-              }`}
-            >
-              <div className="flex items-center gap-2">
-                {burnState.status === 'completed' && telemetry.phase !== 'failed' ? (
-                  <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" />
-                ) : (
-                  <AlertTriangle className="h-4 w-4 text-rose-400 shrink-0" />
-                )}
-                <span>{telemetry.failureReason || burnState.outcomeSummary}</span>
-              </div>
-              <button
-                type="button"
-                onClick={handleResetPad}
-                className="shrink-0 flex items-center gap-1 border border-slate-600 bg-slate-900 px-2.5 py-1 font-mono-tab text-[11px] font-bold text-white hover:border-cyan-400 cursor-pointer"
-              >
-                <RotateCcw className="h-3.5 w-3.5" />
-                Reset Pad
-              </button>
-            </div>
-          )}
-        </div>
-
-        {/* Right 4 Cols: Tactile Cockpit Flight Controls */}
-        <div className="lg:col-span-4 border border-slate-800 bg-[#080d19] p-4 flex flex-col justify-between space-y-4">
-          <div className="space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-              <div className="flex items-center gap-2">
-                <Gauge className="h-4 w-4 text-amber-400" />
-                <h3 className="font-display text-xs font-bold uppercase tracking-wider text-white">
-                  Flight Director Cockpit
-                </h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setAutoGuidance((g) => !g)}
-                className={`px-2 py-0.5 font-mono-tab text-[10px] font-bold border cursor-pointer ${
-                  autoGuidance
-                    ? 'border-cyan-400 bg-cyan-950/40 text-cyan-300'
-                    : 'border-slate-700 bg-slate-900 text-slate-400 hover:text-white'
-                }`}
-                title="Toggle SAS Gravity-Turn Pitch Assist"
-              >
-                {autoGuidance ? 'SAS PITCH ASSIST: ON' : 'MANUAL PITCH'}
-              </button>
-            </div>
-
-            {/* Throttle Control */}
-            <div className="border border-slate-800 bg-slate-900/60 p-3 space-y-2">
-              <div className="flex items-center justify-between text-xs font-mono-tab">
-                <span className="text-slate-300">MAIN ENGINE THROTTLE</span>
-                <strong className="text-amber-300 text-sm">{telemetry.throttlePct}%</strong>
-              </div>
-              <input
-                type="range"
-                min={0}
-                max={100}
-                step={5}
-                value={telemetry.throttlePct}
-                onChange={(e) =>
-                  setTelemetry((p) => ({ ...p, throttlePct: parseInt(e.target.value, 10) }))
-                }
-                aria-label="Main Engine Throttle"
-                className="w-full accent-amber-400 h-2 bg-slate-800 cursor-pointer"
-              />
-              <div className="grid grid-cols-4 gap-1.5 font-mono-tab text-[10px]">
-                {[0, 65, 85, 100].map((val) => (
-                  <button
-                    key={val}
-                    type="button"
-                    onClick={() => setTelemetry((p) => ({ ...p, throttlePct: val }))}
-                    className={`py-1.5 border font-bold cursor-pointer ${
-                      telemetry.throttlePct === val
-                        ? 'border-amber-400 bg-amber-500 text-slate-950'
-                        : 'border-slate-700 bg-slate-950 text-slate-300 hover:border-amber-400'
-                    }`}
-                  >
-                    {val === 65 ? '65% Q' : `${val}%`}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Pitch Angle Control */}
-            <div className="border border-slate-800 bg-slate-900/60 p-3 space-y-2">
-              <div className="flex items-center justify-between text-xs font-mono-tab">
-                <span className="text-slate-300">PITCH ANGLE (90° UP → 0° ORBIT)</span>
-                <strong className="text-cyan-300 text-sm">{telemetry.pitchDeg.toFixed(0)}°</strong>
-              </div>
-              <input
-                type="range"
-                min={0}
-                max={90}
-                step={1}
-                value={telemetry.pitchDeg}
-                onChange={(e) => {
-                  setAutoGuidance(false);
-                  setTelemetry((p) => ({ ...p, pitchDeg: parseInt(e.target.value, 10) }));
-                }}
-                aria-label="Pitch Angle"
-                className="w-full accent-cyan-400 h-2 bg-slate-800 cursor-pointer"
-              />
-              <div className="grid grid-cols-4 gap-1.5 font-mono-tab text-[10px]">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAutoGuidance(false);
-                    setTelemetry((p) => ({ ...p, pitchDeg: Math.min(90, p.pitchDeg + 8) }));
-                  }}
-                  className="py-1.5 border border-slate-700 bg-slate-950 text-slate-200 hover:border-cyan-400 cursor-pointer"
-                >
-                  ▲ Pitch +8°
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAutoGuidance(false);
-                    setTelemetry((p) => ({ ...p, pitchDeg: Math.min(90, p.pitchDeg + 3) }));
-                  }}
-                  className="py-1.5 border border-slate-700 bg-slate-950 text-slate-200 hover:border-cyan-400 cursor-pointer"
-                >
-                  +3°
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAutoGuidance(false);
-                    setTelemetry((p) => ({ ...p, pitchDeg: Math.max(0, p.pitchDeg - 3) }));
-                  }}
-                  className="py-1.5 border border-slate-700 bg-slate-950 text-slate-200 hover:border-cyan-400 cursor-pointer"
-                >
-                  -3°
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAutoGuidance(false);
-                    setTelemetry((p) => ({ ...p, pitchDeg: Math.max(0, p.pitchDeg - 8) }));
-                  }}
-                  className="py-1.5 border border-slate-700 bg-slate-950 text-slate-200 hover:border-cyan-400 cursor-pointer"
-                >
-                  ▼ Turn -8°
-                </button>
-              </div>
-            </div>
-
-            {/* Vehicle Stress & Thermal Gauges */}
-            <div className="grid grid-cols-2 gap-2.5 font-mono-tab text-[11px]">
-              <div className="border border-slate-800 bg-slate-900/60 p-2.5 space-y-1">
-                <div className="flex justify-between text-[10px]">
-                  <span className="text-slate-400">MAX-Q STRESS</span>
-                  <strong className={telemetry.structuralStressPct > 65 ? 'text-rose-400' : 'text-amber-300'}>
-                    {telemetry.structuralStressPct.toFixed(0)}%
-                  </strong>
-                </div>
-                <div className="h-2 w-full bg-slate-800">
-                  <div
-                    className={`h-full transition-all ${telemetry.structuralStressPct > 65 ? 'bg-rose-500' : 'bg-amber-400'}`}
-                    style={{ width: `${telemetry.structuralStressPct}%` }}
-                  />
-                </div>
-              </div>
-
-              <div className="border border-slate-800 bg-slate-900/60 p-2.5 space-y-1">
-                <div className="flex justify-between text-[10px]">
-                  <span className="text-slate-400">THERMAL LOAD</span>
-                  <strong className={telemetry.thermalHeatPct > 65 ? 'text-rose-400' : 'text-cyan-300'}>
-                    {telemetry.thermalHeatPct.toFixed(0)}%
-                  </strong>
-                </div>
-                <div className="h-2 w-full bg-slate-800">
-                  <div
-                    className={`h-full transition-all ${telemetry.thermalHeatPct > 65 ? 'bg-rose-500' : 'bg-cyan-400'}`}
-                    style={{ width: `${telemetry.thermalHeatPct}%` }}
-                  />
-                </div>
-              </div>
-            </div>
-
-            {/* SECO Velocity Cutoff Window Meter */}
-            <div className="border border-slate-800 bg-slate-950 p-3 space-y-1.5 font-mono-tab">
-              <div className="flex justify-between text-[11px]">
-                <span className="text-slate-300">SECO CUTOFF VELOCITY GATE</span>
-                <strong className={inSecoWindow ? 'text-emerald-400' : 'text-cyan-300'}>
-                  {velRatioPct}% of Target
-                </strong>
-              </div>
-              <div className="relative h-3.5 w-full bg-slate-900 border border-slate-800">
-                {/* Green 94%-107% nominal SECO zone */}
-                <div
-                  className="absolute top-0 bottom-0 bg-emerald-500/35 border-x border-emerald-400"
-                  style={{ left: '75.2%', width: '10.4%' }}
-                  title="Nominal SECO Cutoff Window (94% - 107%)"
-                />
-                <div
-                  className={`h-full transition-all duration-75 ${
-                    inSecoWindow ? 'bg-emerald-400' : velRatioPct > 107 ? 'bg-rose-500' : 'bg-cyan-400'
-                  }`}
-                  style={{ width: `${Math.min(100, (velRatioPct / 125) * 100)}%` }}
-                />
-              </div>
-              <div className="flex justify-between text-[9px] text-slate-500">
-                <span>0%</span>
-                <span className="text-emerald-400">SECO WINDOW (94–107%)</span>
-                <span>125% OVERBURN</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Primary Liftoff / SECO Ignition Trigger */}
-          <div className="space-y-2 pt-2 border-t border-slate-800">
-            {(isPayloadTooHeavy || isTwrTooLow) && (
-              <div className="border border-rose-500/40 bg-rose-950/30 p-2 text-[11px] text-rose-200 flex items-center gap-2">
-                <ShieldAlert className="h-4 w-4 text-rose-400 shrink-0" />
-                <span>
-                  {isPayloadTooHeavy
-                    ? 'Payload exceeds selected rocket lift cap—open Rocket Selector above.'
-                    : 'Liftoff TWR < 1.1x—select a higher-thrust rocket.'}
-                </span>
-              </div>
-            )}
-
-            {telemetry.phase === 'ascent' ? (
-              <button
-                type="button"
-                onClick={handleExecuteSeco}
-                className={`w-full py-3 px-4 flex items-center justify-center gap-2 font-mono-tab text-sm font-black uppercase tracking-wider transition-all cursor-pointer ${
-                  inSecoWindow
-                    ? 'bg-emerald-400 hover:bg-emerald-300 text-slate-950 shadow-xl shadow-emerald-500/30'
-                    : 'bg-amber-500 hover:bg-amber-400 text-slate-950'
-                }`}
-              >
-                <Zap className="h-4 w-4" />
-                <span>{inSecoWindow ? 'CUT ENGINES NOW (SECO NOMINAL!)' : 'CUT ENGINES (SECO)'}</span>
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={handleLiftoff}
-                disabled={isPayloadTooHeavy || isTwrTooLow}
-                className={`w-full py-3 px-4 flex items-center justify-center gap-2 font-mono-tab text-sm font-black uppercase tracking-wider transition-all cursor-pointer ${
-                  isPayloadTooHeavy || isTwrTooLow
-                    ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700'
-                    : 'bg-amber-500 hover:bg-amber-400 text-slate-950 shadow-lg shadow-amber-500/20'
-                }`}
-              >
-                <Flame className="h-4 w-4" />
-                <span>{telemetry.phase === 'prelaunch' ? 'IGNITE ENGINES (LIFTOFF)' : 'RE-FLY ASCENT LAUNCH'}</span>
-              </button>
-            )}
           </div>
         </div>
       </div>
