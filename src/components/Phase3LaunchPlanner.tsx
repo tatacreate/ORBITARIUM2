@@ -75,13 +75,18 @@ export function Phase3LaunchPlanner({
   };
   const worldVisual = planetColors[parts.objective.targetBody] ?? planetColors.earth;
 
+  const selectedOrbit = ORBITS.find((o) => o.id === config.orbitId) ?? ORBITS[0];
   const targetOrbits: OrbitSpec[] = ORBITS.filter(
     (o) => o.body === parts.objective.targetBody,
   );
-  const allOtherOrbits: OrbitSpec[] = ORBITS.filter(
-    (o) => o.body !== parts.objective.targetBody,
+  const otherOrbits = ORBITS.filter(
+    (o) => o.body !== parts.objective.targetBody && o.id !== config.orbitId,
   );
-  const visibleOrbits = [...targetOrbits, ...allOtherOrbits.slice(0, 2)];
+  const visibleOrbits: OrbitSpec[] = [
+    ...targetOrbits,
+    ...(targetOrbits.some((o) => o.id === config.orbitId) ? [] : [selectedOrbit]),
+    ...otherOrbits,
+  ].slice(0, 5);
 
   const fairingFits = parts.bus.tier <= parts.launchVehicle.maxBusTier;
   const massFits = telemetry.wetMassKg <= telemetry.payloadCapacityKg;
@@ -329,8 +334,18 @@ export function Phase3LaunchPlanner({
                     <g
                       key={orb.id}
                       onClick={() => onUpdateConfig({ orbitId: orb.id }, orb.shortName)}
-                      className="cursor-pointer"
+                      className="cursor-pointer group"
                     >
+                      {/* Generous invisible hit area */}
+                      <ellipse
+                        cx="210"
+                        cy="115"
+                        rx={rx}
+                        ry={ry}
+                        fill="none"
+                        stroke="transparent"
+                        strokeWidth="16"
+                      />
                       <ellipse
                         cx="210"
                         cy="115"

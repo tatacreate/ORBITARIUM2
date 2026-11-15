@@ -1,5 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { onAuthStateChanged, type User } from 'firebase/auth';
+import {
+  ArrowLeft,
+  BookOpen,
+  Compass,
+  FileCheck2,
+  Layers,
+  Orbit,
+  Pause,
+  Play,
+  Radio,
+  Rocket,
+  Volume2,
+  VolumeX,
+} from 'lucide-react';
 import { audioSynth } from './audio/synth';
 import { AstraAdvisor } from './components/AstraAdvisor';
 import { MissionArchiveModal } from './components/MissionArchiveModal';
@@ -13,7 +27,34 @@ import { Phase5Debrief } from './components/Phase5Debrief';
 import { PhaseHeader } from './components/PhaseHeader';
 import { TeamRoomModal } from './components/TeamRoomModal';
 import { TitleScreen } from './components/TitleScreen';
+
+// NASA 4-Segment + ConOps Components
+import { ConOpsSegment } from './components/segments/ConOpsSegment';
+import { GroundSegment } from './components/segments/GroundSegment';
+import { LaunchSegment } from './components/segments/LaunchSegment';
+import { MissionSetupSegment } from './components/segments/MissionSetupSegment';
+import { SpaceSegment } from './components/segments/SpaceSegment';
+import { UserSegment } from './components/segments/UserSegment';
+
 import { DEFAULT_MISSION_CONFIG, OBJECTIVES } from './data/catalog';
+import {
+  CELESTIAL_BODIES,
+  G0,
+  GROUND_STATIONS,
+  NASA_INSTRUMENTS,
+  NASA_OBJECTIVES,
+  NASA_ROCKETS,
+  SPEED_OF_LIGHT_KMS,
+  calculateOrbitalPeriodMinutes,
+  calculateTargetDeltaV,
+  checkLineOfSight,
+  computeCanadarmEndEffector,
+  computeDishAlignmentLock,
+  evaluateDiscoveryCards,
+  evaluateSystemsVerification,
+  getSurfaceLandmarksForObjective,
+  propagateOrbitStep,
+} from './engine/orbitalMechanics';
 import {
   buildTradeOffPopup,
   computeTelemetry,
@@ -56,45 +97,212 @@ import type {
   SubsystemTab,
   TradeOffPopup,
 } from './types/mission';
+import type {
+  ActiveHazard,
+  ArchitectMode,
+  CanadarmTargetType,
+  CsaChallengeState,
+  GmatTelemetrySample,
+  GroundCommState,
+  LaunchBurnState,
+  NasaInstrument,
+  NasaMissionSegment,
+  NasaObjectiveSpec,
+  OrbitalState,
+  PropulsionType,
+  SpacecraftOpsState,
+  SurfaceLandmark,
+} from './types/nasaSegments';
+
+const INITIAL_CSA_CHALLENGES: CsaChallengeState = {
+  polarRadarCaptured: false,
+  debrisAlertActive: false,
+  debrisAvoidedCount: 0,
+  solarArraysAligned: false,
+  challengePoints: 0,
+  lastChallengeFeedback: null,
+};
+
+function angleDiffDeg(a: number, b: number): number {
+  const diff = ((a - b + 540) % 360) - 180;
+  return Math.abs(diff);
+}
+
+function createInitialOpsState(): SpacecraftOpsState {
+  return {
+    batteryPct: 88,
+    solarPanelAngleDeg: 25,
+    sunAngleDeg: 35,
+    shieldAngleDeg: 35,
+    radiationDosePct: 8,
+    hullIntegrityPct: 100,
+    sensorSlewOffsetDeg: 0,
+    canadarm: {
+      shoulderDeg: 78,
+      elbowDeg: -42,
+      wristDeg: 18,
+      clampClosed: false,
+      targetType: 'cubesat',
+      targetX: 0.44,
+      targetY: 0.62,
+      targetAngleDeg: 0,
+      driftVx: 0.014,
+      driftVy: -0.011,
+      completedCount: 0,
+      lastOpFeedback: null,
+    },
+    activeHazard: null,
+    hazardsSurvived: 0,
+    hazardsFailed: 0,
+    lastManeuverAccuracyPct: 90,
+  };
+}
 
 export default function App() {
+  // Top-level App View: Homepage ('title'), Primary NASA/GMAT/CSA Architect ('nasa-architect'), or Classic 3D Team Hangar ('classic-hangar')
+  const [appView, setAppView] = useState<'title' | 'nasa-architect' | 'classic-hangar'>('title');
+  const [currentNasaSegment, setCurrentNasaSegment] = useState<NasaMissionSegment>('setup');
+  const [architectMode, setArchitectMode] = useState<ArchitectMode>('cadet');
+
+  // NASA, GMAT & CSA Mission Architect State
+  const [selectedObjective, setSelectedObjective] = useState<NasaObjectiveSpec>(NASA_OBJECTIVES[0]);
+  const [selectedRocket, setSelectedRocket] = useState(NASA_ROCKETS[1]);
+  const [selectedPropulsion, setSelectedPropulsion] = useState<PropulsionType>('chemical');
+  const [propellantBudgetKg, setPropellantBudgetKg] = useState<number>(NASA_OBJECTIVES[0].propellantBudgetKg);
+  const [nasaInstruments, setNasaInstruments] = useState<NasaInstrument[]>(NASA_INSTRUMENTS);
+  const [csaChallenges, setCsaChallenges] = useState<CsaChallengeState>(INITIAL_CSA_CHALLENGES);
+
+  // GMAT Telemetry Time-Series Samples
+  const [telemetryHistory, setTelemetryHistory] = useState<GmatTelemetrySample[]>([
+    {
+      timestampSec: 0,
+      altitudeKm: 550,
+      orbitalSpeedKms: 7.58,
+      propellantRemainingKg: NASA_OBJECTIVES[0].propellantBudgetKg,
+      eccentricity: 0.001,
+      downlinkRateMbps: 120,
+    },
+  ]);
+
+  const initialTargetDv = calculateTargetDeltaV('earth', 550, 'leo');
+  const [burnState, setBurnState] = useState<LaunchBurnState>({
+    status: 'completed',
+    throttlePct: 100,
+    burnDurationSec: 180,
+    targetDeltaVKms: initialTargetDv,
+    deliveredDeltaVKms: initialTargetDv,
+    propellantUsedKg: 280,
+    outcomeType: 'nominal',
+    outcomeSummary: 'Nominal Orbital Injection: Delivered clean insertion into stable circular parking orbit.',
+  });
+
+  const [orbitState, setOrbitState] = useState<OrbitalState>({
+    altitudeKm: 550,
+    periapsisKm: 545,
+    apoapsisKm: 555,
+    eccentricity: 0.001,
+    inclinationDeg: 97.6,
+    semiMajorAxisKm: 6371 + 550,
+    periodMinutes: calculateOrbitalPeriodMinutes('earth', 550, 0.001),
+    orbitalSpeedKms: 7.58,
+    trueAnomalyDeg: 45,
+    raanDeg: 45.0,
+    argPeriapsisDeg: 90.0,
+    subSatLatDeg: 28.5,
+    subSatLonDeg: -80.6,
+    inEclipse: false,
+    perturbations: {
+      j2NodalPrecessionDegPerDay: -0.985,
+      j2ApsidalDriftDegPerDay: -3.24,
+      atmosphericDragDecayKmPerDay: 0.002,
+      solarRadiationPressureScale: 1.0,
+    },
+  });
+
+  const [opsState, setOpsState] = useState<SpacecraftOpsState>(() => createInitialOpsState());
+  const [landmarks, setLandmarks] = useState<SurfaceLandmark[]>(() =>
+    getSurfaceLandmarksForObjective(NASA_OBJECTIVES[0]),
+  );
+  const [manualStationId, setManualStationId] = useState<string | null>(null);
+
+  const [groundComm, setGroundComm] = useState<GroundCommState>({
+    activeStationId: 'dsn-goldstone',
+    hasLineOfSight: true,
+    elevationAngleDeg: 42.0,
+    distanceKm: 850,
+    downlinkActive: true,
+    currentDownlinkMbps: 120,
+    isBlackout: false,
+    bufferStoredGB: 12.4,
+    bufferCapacityGB: 128,
+    totalDataDownlinkedGB: 76.5,
+    dishAzimuthDeg: 135.2,
+    dishElevationDeg: 42.0,
+    dishLockQualityPct: 96,
+    bandMode: 'Ka-Band',
+    allocatedBandwidthPct: 100,
+    servoAssistEnabled: false,
+    passTimeRemainingSec: 210,
+    totalPassContacts: 1,
+    navTelemetry: {
+      carrierFreqGhz: 32.05,
+      rangeKm: 850,
+      rangeRateKms: 3.2,
+      dopplerShiftKhz: -342.1,
+      azimuthDeg: 135.2,
+      elevationDeg: 42.0,
+      signalStrengthDbm: -82,
+    },
+  });
+
+  // Tracked Scanned Grid Tiles on 2D Equirectangular map (36 lon columns x 18 lat rows = 648 total cells)
+  const [scannedTiles, setScannedTiles] = useState<Set<string>>(() => {
+    const initial = new Set<string>();
+    for (let c = 8; c < 28; c++) {
+      initial.add(`${c}:${Math.round(9 + 4 * Math.sin((c / 36) * Math.PI * 2))}`);
+      initial.add(`${c}:${Math.round(9 + 5 * Math.sin((c / 36) * Math.PI * 2))}`);
+    }
+    return initial;
+  });
+
+  // Simulation Clock & Speed Controls
+  const [isSimPaused, setIsSimPaused] = useState(false);
+  const [simSpeedMult, setSimSpeedMult] = useState<number>(1);
+  const [missionElapsedSec, setMissionElapsedSec] = useState<number>(142500);
+
+  // Modals & UI Controls
+  const [muted, setMuted] = useState(false);
+  const [showDictionaryModal, setShowDictionaryModal] = useState(false);
+  const [showGuideModal, setShowGuideModal] = useState(false);
+  const [showTeamModal, setShowTeamModal] = useState(false);
+  const [showArchiveModal, setShowArchiveModal] = useState(false);
+  const [toastError, setToastError] = useState<string | null>(null);
+
+  // Auth
   const [user, setUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [authLoading, setAuthLoading] = useState(false);
 
-  const [phase, setPhase] = useState<GamePhase>('title');
-  const [config, setConfig] = useState<MissionConfig>(DEFAULT_MISSION_CONFIG);
+  // Classic 3D Collaborative Hangar State (used on TitleScreen backdrop + 1-4 Player Team Rooms)
+  const [classicPhase, setClassicPhase] = useState<GamePhase>('briefing');
+  const [classicConfig, setClassicConfig] = useState<MissionConfig>(DEFAULT_MISSION_CONFIG);
   const [soloRole, setSoloRole] = useState<EngineeringRole>('director');
   const [activeCategory, setActiveCategory] = useState<BuilderCategory>('bus');
   const [dockCollapsed, setDockCollapsed] = useState(false);
   const [explodeAmount, setExplodeAmount] = useState(0);
   const [cameraPreset, setCameraPreset] = useState<CameraPreset>('hero');
   const [cameraPresetNonce, setCameraPresetNonce] = useState(0);
-  const [muted, setMuted] = useState(false);
   const [tradeOffPopup, setTradeOffPopup] = useState<TradeOffPopup | null>(null);
-
-  // Multi-run iteration tracking
   const [soloRunCount, setSoloRunCount] = useState(1);
   const [previousScore, setPreviousScore] = useState<number | null>(null);
-
-  // Collaborative Team Room State
   const [roomId, setRoomId] = useState<string | null>(null);
   const [roomState, setRoomState] = useState<RoomState | null>(null);
   const [members, setMembers] = useState<RoomMember[]>([]);
   const [messages, setMessages] = useState<RoomMessage[]>([]);
-
-  // Modals
-  const [showTeamModal, setShowTeamModal] = useState(false);
-  const [showArchiveModal, setShowArchiveModal] = useState(false);
-  const [showGuideModal, setShowGuideModal] = useState(false);
-  const [showDictionaryModal, setShowDictionaryModal] = useState(false);
-  const [toastError, setToastError] = useState<string | null>(null);
-
-  // Simulation State
-  const [simProgress, setSimProgress] = useState(0);
-  const [simSpeed, setSimSpeed] = useState<1 | 2>(1);
-  const [simSeed, setSimSeed] = useState(1042);
-  const [anomalies, setAnomalies] = useState<FlightAnomaly[]>([]);
+  const [classicSimProgress, setClassicSimProgress] = useState(0);
+  const [classicSimSpeed, setClassicSimSpeed] = useState<1 | 2>(1);
+  const [classicSimSeed, setClassicSimSeed] = useState(1042);
+  const [classicAnomalies, setClassicAnomalies] = useState<FlightAnomaly[]>([]);
   const [resolvedAnomalyIds, setResolvedAnomalyIds] = useState<string[]>([]);
   const [activeAnomaly, setActiveAnomaly] = useState<FlightAnomaly | null>(null);
   const [chosenActions, setChosenActions] = useState<
@@ -107,7 +315,8 @@ export default function App() {
   const [publishedLeaderboardId, setPublishedLeaderboardId] = useState<string | null>(null);
   const [publishingLeaderboard, setPublishingLeaderboard] = useState(false);
 
-  const telemetry = useMemo(() => computeTelemetry(config), [config]);
+  const classicTelemetry = useMemo(() => computeTelemetry(classicConfig), [classicConfig]);
+  const tradeOffTimerRef = useRef<number | null>(null);
 
   // Auth Listener
   useEffect(() => {
@@ -121,7 +330,27 @@ export default function App() {
     return () => unsub();
   }, []);
 
-  // Firestore Real-Time Room Listener
+  // Keyboard shortcut: Enter on TitleScreen launches Mission Architect
+  useEffect(() => {
+    if (appView !== 'title') return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (
+        e.key === 'Enter' &&
+        !showTeamModal &&
+        !showArchiveModal &&
+        !showGuideModal &&
+        !showDictionaryModal
+      ) {
+        audioSynth.playSelect();
+        setAppView('nasa-architect');
+        setCurrentNasaSegment('setup');
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [appView, showTeamModal, showArchiveModal, showGuideModal, showDictionaryModal]);
+
+  // Room Listener & Synchronization for Collaborative Hangar
   useEffect(() => {
     if (!authReady || !user || !roomId) return;
     const unsub = subscribeRoom(
@@ -133,35 +362,25 @@ export default function App() {
           return;
         }
         setRoomState(nextRoom);
-        setConfig({
-          difficulty: nextRoom.difficulty || 'engineer',
-          modelMode: nextRoom.modelMode || 'realistic',
-          constraintEventId: nextRoom.constraintEventId || 'none',
+        setClassicConfig({
+          difficulty: nextRoom.difficulty,
+          modelMode: nextRoom.modelMode,
+          constraintEventId: nextRoom.constraintEventId,
           objectiveId: nextRoom.objectiveId,
           orbitId: nextRoom.orbitId,
           launchVehicleId: nextRoom.launchVehicleId,
           busId: nextRoom.busId,
           propulsionId: nextRoom.propulsionId,
           powerId: nextRoom.powerId,
-          batteryId: nextRoom.batteryId || 'batt-simple-li',
+          batteryId: nextRoom.batteryId,
           commsId: nextRoom.commsId,
-          avionicsId: nextRoom.avionicsId || 'avionics-simple',
-          adcsId: nextRoom.adcsId || 'adcs-advanced',
+          avionicsId: nextRoom.avionicsId,
+          adcsId: nextRoom.adcsId,
           shieldingId: nextRoom.shieldingId,
           instrumentIds: nextRoom.instrumentIds,
           solarSizing: nextRoom.solarSizing,
           propellantRatio: nextRoom.propellantRatio,
         });
-        if (nextRoom.status === 'simulating') {
-          setSimSeed(nextRoom.simulationSeed);
-          setPhase((prev) =>
-            prev === 'briefing' || prev === 'assembly' || prev === 'planner'
-              ? 'simulating'
-              : prev,
-          );
-        } else if (nextRoom.status === 'designing') {
-          setPhase((prev) => (prev === 'debrief' ? 'assembly' : prev));
-        }
       },
       setMembers,
       setMessages,
@@ -169,628 +388,1723 @@ export default function App() {
     return () => unsub();
   }, [authReady, user, roomId]);
 
-  const showToast = useCallback((msg: string) => {
-    setToastError(msg);
-    setTimeout(() => {
-      setToastError((curr) => (curr === msg ? null : curr));
-    }, 4500);
-  }, []);
-
-  // Auto-dismiss trade-off popup after 6.5 seconds
+  // Classic Simulation Loop (when team room or classic hangar enters simulating phase)
   useEffect(() => {
-    if (!tradeOffPopup) return;
-    const timer = setTimeout(() => {
-      setTradeOffPopup((curr) => (curr?.id === tradeOffPopup.id ? null : curr));
-    }, 6500);
-    return () => clearTimeout(timer);
-  }, [tradeOffPopup]);
+    if (appView !== 'classic-hangar' || classicPhase !== 'simulating' || activeAnomaly) return;
 
-  const handleSignIn = async () => {
+    const timer = window.setInterval(() => {
+      setClassicSimProgress((prev) => {
+        const next = Math.min(1, prev + 0.015 * classicSimSpeed);
+
+        const nextAnomaly = classicAnomalies.find(
+          (a) => next >= a.triggerProgress && !resolvedAnomalyIds.includes(a.id),
+        );
+        if (nextAnomaly) {
+          audioSynth.playAlert();
+          setActiveAnomaly(nextAnomaly);
+          return next;
+        }
+
+        const powerShift = chosenActions.reduce((s, c) => s + (c.powerShiftW || 0), 0);
+        const dataShift = chosenActions.reduce((s, c) => s + (c.dataShiftPct || 0), 0);
+        setSimSamples((old) => [
+          ...old.slice(-30),
+          {
+            progress: next,
+            powerPct: Math.max(0, Math.min(100, 75 + (classicTelemetry.powerMarginW + powerShift) * 0.08)),
+            dataPct: Math.max(0, Math.min(100, 68 + classicTelemetry.linkMarginDb * 2 + dataShift)),
+            sciencePct: Math.round(next * 100),
+          },
+        ]);
+
+        if (next >= 1) {
+          clearInterval(timer);
+          const allReady = members.length <= 1 || members.every((m) => m.ready);
+          const result = evaluateSimulationOutcome(
+            classicConfig,
+            classicTelemetry,
+            chosenActions,
+            members.length || 1,
+            allReady,
+          );
+          setOutcome(result);
+          if (result.missionSuccess) audioSynth.playSuccess();
+          else audioSynth.playAlert();
+          if (roomId) {
+            void completeRoomSimulation(roomId, result.totalScore, result.grade).catch(() => {});
+          }
+          setClassicPhase('debrief');
+        }
+        return next;
+      });
+    }, 120);
+
+    return () => clearInterval(timer);
+  }, [
+    appView,
+    classicPhase,
+    activeAnomaly,
+    classicSimSpeed,
+    classicAnomalies,
+    resolvedAnomalyIds,
+    chosenActions,
+    classicTelemetry,
+    classicConfig,
+    members,
+    roomId,
+  ]);
+
+  // Auth Handlers
+  const handleSignIn = useCallback(async () => {
     setAuthLoading(true);
     try {
       await signInWithGoogle();
       audioSynth.playSelect();
     } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Google Sign-In was cancelled.');
+      setToastError(err instanceof Error ? err.message : 'Unable to sign in with Google.');
     } finally {
       setAuthLoading(false);
     }
-  };
+  }, []);
 
-  const handleSignOut = async () => {
-    await signOutUser();
-    setRoomId(null);
-    setRoomState(null);
-    setMembers([]);
-    setMessages([]);
-  };
+  const handleSignOut = useCallback(async () => {
+    try {
+      await signOutUser();
+      setRoomId(null);
+      setRoomState(null);
+    } catch (err) {
+      setToastError(err instanceof Error ? err.message : 'Unable to sign out.');
+    }
+  }, []);
 
-  const handleStartSolo = () => {
+  // TitleScreen Difficulty Sync
+  const handleSelectDifficulty = useCallback((d: DifficultyLevel) => {
     audioSynth.playSelect();
-    setRoomId(null);
-    setRoomState(null);
-    setSoloRunCount(1);
-    setPreviousScore(null);
-    setPhase('briefing');
-  };
+    setClassicConfig((prev) => ({ ...prev, difficulty: d }));
+    setArchitectMode(d === 'sandbox' ? 'sandbox' : 'cadet');
+  }, []);
 
-  const handleCreateRoom = async (
-    title: string,
-    challengeMode: MissionChallengeMode,
-    objectiveId: string,
-  ) => {
-    if (!user) return;
-    const targetObj = OBJECTIVES.find((o) => o.id === objectiveId) ?? OBJECTIVES[0];
-    const startConfig: MissionConfig =
-      challengeMode === 'competitive'
-        ? { ...config, objectiveId: targetObj.id, orbitId: targetObj.recommendedOrbitId }
-        : config;
-    const code = await createCollaborativeRoom(user, title, startConfig, challengeMode);
-    audioSynth.playMountPart();
-    setConfig(startConfig);
-    setRoomId(code);
-    setPreviousScore(null);
-    setPhase('assembly');
-    setActiveCategory('team');
-  };
-
-  const handleJoinRoom = async (code: string) => {
-    if (!user) return;
-    const joined = await joinCollaborativeRoom(user, code);
-    audioSynth.playMountPart();
-    setRoomId(joined.roomId);
-    setPreviousScore(null);
-    setPhase('assembly');
-    setActiveCategory('team');
-  };
-
-  const handleUpdateConfig = useCallback(
-    (patch: Partial<MissionConfig>, changeSummary?: string) => {
+  // Classic Config Updater
+  const handleUpdateClassicConfig = useCallback(
+    (patch: Partial<MissionConfig>, label: string) => {
       audioSynth.playMountPart();
-      setConfig((prev) => {
+      setClassicConfig((prev) => {
         const next = { ...prev, ...patch };
-        if (changeSummary && phase === 'assembly') {
-          const popup = buildTradeOffPopup(prev, next, changeSummary);
-          if (popup) setTradeOffPopup(popup);
+        const popup = buildTradeOffPopup(prev, next, label);
+        if (popup) {
+          setTradeOffPopup(popup);
+          if (tradeOffTimerRef.current) clearTimeout(tradeOffTimerRef.current);
+          tradeOffTimerRef.current = window.setTimeout(() => setTradeOffPopup(null), 5000);
         }
-        if (roomId && user && roomState?.status === 'designing') {
-          void updateRoomConfig(roomId, next).catch((err) =>
-            showToast(err instanceof Error ? err.message : 'Sync failed.'),
-          );
-          if (changeSummary) {
-            const myRole = members.find((m) => m.uid === user.uid)?.role || 'director';
-            void sendRoomMessage(roomId, user, myRole, changeSummary, 'change').catch(() => {});
+        if (roomId) {
+          void updateRoomConfig(roomId, next).catch(() => {});
+          if (user) {
+            const myMember = members.find((m) => m.uid === user.uid);
+            void sendRoomMessage(roomId, user, myMember?.role || soloRole, `Updated ${label}`, 'change').catch(() => {});
           }
         }
         return next;
       });
     },
-    [roomId, user, roomState?.status, members, showToast, phase],
+    [roomId, user, members, soloRole],
   );
 
-  const handleChangeDifficulty = (difficulty: DifficultyLevel) => {
-    handleUpdateConfig({ difficulty }, `Switched difficulty to ${difficulty}`);
-  };
-
-  const handleSelectBriefingObjective = (objectiveId: string) => {
-    const obj = OBJECTIVES.find((o) => o.id === objectiveId);
-    if (!obj) return;
-    handleUpdateConfig(
-      { objectiveId: obj.id, orbitId: obj.recommendedOrbitId },
-      `Set objective to ${obj.title}`,
-    );
-  };
-
-  const handleApplyArchetype = (arch: MissionArchetype) => {
-    handleUpdateConfig(arch.patch, `Loaded ${arch.name} blueprint`);
-    setPhase('assembly');
-  };
-
-  const handleChangeRole = async (role: EngineeringRole) => {
-    if (!roomId || !user) return;
-    audioSynth.playSelect();
-    const mySeat = members.find((m) => m.uid === user.uid);
-    await updateMemberSeat(
-      roomId,
-      user.uid,
-      user.displayName || 'Engineer',
-      role,
-      mySeat?.ready || false,
-    );
-  };
-
-  const handleToggleReady = async () => {
-    if (!roomId || !user) return;
-    const mySeat = members.find((m) => m.uid === user.uid);
-    const nextReady = !(mySeat?.ready || false);
-    audioSynth.playSelect();
-    await updateMemberSeat(
-      roomId,
-      user.uid,
-      user.displayName || 'Engineer',
-      mySeat?.role || 'director',
-      nextReady,
-    );
-    await sendRoomMessage(
-      roomId,
-      user,
-      mySeat?.role || 'director',
-      nextReady ? 'Signed off on subsystem readiness.' : 'Reopened subsystem for edits.',
-      'signoff',
-    );
-  };
-
-  const handleSendMessage = async (text: string) => {
-    if (!roomId || !user) return;
-    const mySeat = members.find((m) => m.uid === user.uid);
-    await sendRoomMessage(roomId, user, mySeat?.role || 'director', text, 'chat');
-  };
-
-  const beginSimulation = useCallback(
-    (seed: number) => {
-      audioSynth.playIgnition();
-      setSimProgress(0);
-      setAnomalies(generateFlightAnomalies(config, seed));
-      setResolvedAnomalyIds([]);
-      setActiveAnomaly(null);
-      setChosenActions([]);
-      setSimSamples([]);
-      setOutcome(null);
-      setSavedMissionId(null);
-      setPublishedLeaderboardId(null);
-      setPhase('simulating');
+  // Team Room Creation & Joining
+  const handleCreateRoom = useCallback(
+    async (title: string, challengeMode: MissionChallengeMode, objectiveId: string) => {
+      if (!user) throw new Error('Sign in with Google first.');
+      const obj = OBJECTIVES.find((o) => o.id === objectiveId) ?? OBJECTIVES[0];
+      const nextCfg: MissionConfig = {
+        ...classicConfig,
+        objectiveId: obj.id,
+        orbitId: obj.recommendedOrbitId,
+      };
+      const newRoomId = await createCollaborativeRoom(user, title, nextCfg, challengeMode);
+      setClassicConfig(nextCfg);
+      setRoomId(newRoomId);
+      setClassicPhase('assembly');
+      setAppView('classic-hangar');
+      audioSynth.playSuccess();
     },
-    [config],
+    [user, classicConfig],
   );
 
-  const handleStartSimulationClick = async () => {
-    const seed = Math.floor(Math.random() * 900000) + 10000;
-    setSimSeed(seed);
-    if (roomId && roomState?.status === 'designing') {
-      await startRoomSimulation(roomId, seed);
-    }
-    beginSimulation(seed);
-  };
+  const handleJoinRoom = useCallback(
+    async (code: string) => {
+      if (!user) throw new Error('Sign in with Google first.');
+      const joined = await joinCollaborativeRoom(user, code);
+      setRoomId(joined.roomId);
+      setClassicPhase('assembly');
+      setAppView('classic-hangar');
+      audioSynth.playSuccess();
+    },
+    [user],
+  );
 
-  useEffect(() => {
-    if (phase === 'simulating' && anomalies.length === 0) {
-      setAnomalies(generateFlightAnomalies(config, simSeed));
-      setSimProgress(0);
-      setResolvedAnomalyIds([]);
-      setActiveAnomaly(null);
-      setChosenActions([]);
-      setSimSamples([]);
+  const handleLaunchClassicSimulation = useCallback(() => {
+    const seed = Math.floor(Math.random() * 99999);
+    setClassicSimSeed(seed);
+    setClassicSimProgress(0);
+    setSimSamples([]);
+    setChosenActions([]);
+    setResolvedAnomalyIds([]);
+    setActiveAnomaly(null);
+    setOutcome(null);
+    setSavedMissionId(null);
+    setPublishedLeaderboardId(null);
+    setClassicAnomalies(generateFlightAnomalies(classicConfig, seed));
+    setClassicPhase('simulating');
+    audioSynth.playSuccess();
+    if (roomId) {
+      void startRoomSimulation(roomId, seed).catch(() => {});
     }
-  }, [phase, anomalies.length, config, simSeed]);
+  }, [classicConfig, roomId]);
 
-  const simStateRef = useRef({
-    phase,
-    simSpeed,
-    activeAnomaly,
-    anomalies,
-    resolvedAnomalyIds,
-    chosenActions,
-    config,
-    telemetry,
-    members,
-    roomId,
+  const handleSelectSubsystem = useCallback((tab: SubsystemTab) => {
+    if (tab === 'bus') setActiveCategory('bus');
+    else if (tab === 'power') setActiveCategory('power');
+    else if (tab === 'payload') setActiveCategory('science');
+    else if (tab === 'team') setActiveCategory('team');
+  }, []);
+
+  // NASA 4-Segment Calculations
+  const totalGridCells = 36 * 18;
+  const groundTrackCoveragePct = Math.min(100, Number(((scannedTiles.size / (totalGridCells * 0.45)) * 100).toFixed(1)));
+  const totalBudgetCostM = selectedRocket.costM + 95 + nasaInstruments.filter((i) => i.enabled).length * 18;
+
+  const verificationScorecard = useMemo(() => {
+    return evaluateSystemsVerification(
+      selectedObjective,
+      selectedRocket,
+      burnState,
+      orbitState,
+      groundComm,
+      nasaInstruments,
+      totalBudgetCostM,
+      groundTrackCoveragePct,
+      architectMode,
+      csaChallenges,
+      opsState,
+      landmarks,
+    );
+  }, [
+    selectedObjective,
+    selectedRocket,
+    burnState,
+    orbitState,
+    groundComm,
+    nasaInstruments,
+    totalBudgetCostM,
+    groundTrackCoveragePct,
+    architectMode,
+    csaChallenges,
+    opsState,
+    landmarks,
+  ]);
+
+  const discoveryCards = useMemo(() => {
+    return evaluateDiscoveryCards(selectedObjective, nasaInstruments, csaChallenges, verificationScorecard);
+  }, [selectedObjective, nasaInstruments, csaChallenges, verificationScorecard]);
+
+  // Live snapshot ref so the 60ms simulation interval never tears down or reads stale closures
+  const simSnapshotRef = useRef({
+    selectedObjective,
+    nasaInstruments,
+    orbitState,
+    groundComm,
+    opsState,
+    landmarks,
+    propellantBudgetKg,
+    missionElapsedSec,
+    manualStationId,
+    currentNasaSegment,
   });
-  simStateRef.current = {
-    phase,
-    simSpeed,
-    activeAnomaly,
-    anomalies,
-    resolvedAnomalyIds,
-    chosenActions,
-    config,
-    telemetry,
-    members,
-    roomId,
+  simSnapshotRef.current = {
+    selectedObjective,
+    nasaInstruments,
+    orbitState,
+    groundComm,
+    opsState,
+    landmarks,
+    propellantBudgetKg,
+    missionElapsedSec,
+    manualStationId,
+    currentNasaSegment,
   };
 
+  const simTickCounterRef = useRef(0);
+  const lastAutoHazardElapsedRef = useRef(142500);
+
+  const buildHazardSpec = useCallback((kind?: 'debris' | 'solar-flare' | 'eclipse-drain'): ActiveHazard => {
+    const chosen: 'debris' | 'solar-flare' | 'eclipse-drain' =
+      kind || (['debris', 'solar-flare', 'eclipse-drain'][Math.floor(Math.random() * 3)] as 'debris' | 'solar-flare' | 'eclipse-drain');
+
+    if (chosen === 'debris') {
+      return {
+        id: `haz-${Date.now()}`,
+        type: 'debris',
+        title: 'Orbital Debris Conjunction Corridor',
+        detail: '18th Space Defense Squadron tracks a 14 cm fragmentation shard intersecting your orbital plane.',
+        actionHint: 'Execute a ≥ 25 m/s Maneuver Burn (or press Fire 32 m/s Dodge Burn) before T-0.',
+        timeRemainingSec: 18,
+        maxTimeSec: 18,
+        severity: 'critical',
+        incomingVectorDeg: Math.round(Math.random() * 360),
+        resolved: false,
+      };
+    }
+
+    if (chosen === 'solar-flare') {
+      return {
+        id: `haz-${Date.now()}`,
+        type: 'solar-flare',
+        title: 'X-Class Coronal Mass Ejection (CME)',
+        detail: 'High-energy solar protons spiking across magnetosphere! Sensitive optics risk radiation saturation.',
+        actionHint: 'Slew Radiation Shield within ±22° of Sun Vector AND shed heavy payloads (≤ 2 active instruments).',
+        timeRemainingSec: 20,
+        maxTimeSec: 20,
+        severity: 'critical',
+        incomingVectorDeg: Math.round(simSnapshotRef.current.opsState.sunAngleDeg),
+        resolved: false,
+      };
+    }
+
+    return {
+      id: `haz-${Date.now()}`,
+      type: 'eclipse-drain',
+      title: 'Deep Umbra Power Bus Sag',
+      detail: 'Extended shadow crossing with high payload draw is dragging main Li-Ion bus toward brownout.',
+      actionHint: 'Shed heavy payloads (≤ 2 instruments ON) or restore positive solar panel margin.',
+      timeRemainingSec: 18,
+      maxTimeSec: 18,
+      severity: 'warning',
+      incomingVectorDeg: 180,
+      resolved: false,
+    };
+  }, []);
+
+  // REAL-TIME ORBITAL PROPAGATION, OPS PHYSICS & DOWNLINK LOOP
   useEffect(() => {
-    if (phase !== 'simulating') return;
-    let rafId = 0;
-    let lastTime = performance.now();
-    let lastSampleAt = 0;
+    if (appView !== 'nasa-architect' || isSimPaused) return;
 
-    const step = (now: number) => {
-      const dt = Math.min((now - lastTime) / 1000, 0.05);
-      lastTime = now;
+    const interval = window.setInterval(() => {
+      const snap = simSnapshotRef.current;
+      const dtSec = 1.0 * simSpeedMult;
+      const nextElapsed = snap.missionElapsedSec + dtSec;
+      simTickCounterRef.current += 1;
 
-      const s = simStateRef.current;
-      if (s.phase !== 'simulating') return;
+      setMissionElapsedSec(nextElapsed);
 
-      if (!s.activeAnomaly) {
-        setSimProgress((prev) => {
-          const speedMult = s.simSpeed === 2 ? 1.85 : 1.0;
-          const next = Math.min(1, prev + dt * 0.075 * speedMult);
+      // 1. Propagate Keplerian orbit & ground swath coverage
+      const nextOrbit = propagateOrbitStep(snap.selectedObjective.targetBody, snap.orbitState, dtSec);
+      setOrbitState(nextOrbit);
 
-          const pending = s.anomalies.find(
-            (a) => !s.resolvedAnomalyIds.includes(a.id) && next >= a.triggerProgress,
-          );
-          if (pending) {
-            audioSynth.playAlert();
-            setActiveAnomaly(pending);
-            return prev;
-          }
-
-          // Sample telemetry every ~0.25s for live resource graph
-          if (now - lastSampleAt > 240) {
-            lastSampleAt = now;
-            const powerShift = s.chosenActions.reduce((acc, a) => acc + (a.powerShiftW || 0), 0);
-            const dataShift = s.chosenActions.reduce((acc, a) => acc + (a.dataShiftPct || 0), 0);
-            const basePowerPct = Math.max(
-              15,
-              Math.min(
-                98,
-                72 + ((s.telemetry.powerMarginW + powerShift) / Math.max(200, s.telemetry.powerGeneratedW)) * 35,
-              ),
-            );
-            const ripple = Math.sin(next * 24) * 5;
-            const baseDataPct = Math.max(
-              10,
-              Math.min(
-                98,
-                (s.telemetry.dataGeneratedGBDay / Math.max(1, s.telemetry.downlinkCapacityGBDay)) * 55 + dataShift,
-              ),
-            );
-            setSimSamples((old) => [
-              ...old.slice(-36),
-              {
-                progress: next,
-                powerPct: Math.max(8, Math.min(98, basePowerPct + ripple)),
-                dataPct: Math.max(8, Math.min(98, baseDataPct + Math.cos(next * 19) * 4)),
-                sciencePct: Math.round(next * 100),
-              },
-            ]);
-          }
-
-          if (next >= 1) {
-            const allReady = s.members.length > 0 && s.members.every((m) => m.ready);
-            const result = evaluateSimulationOutcome(
-              s.config,
-              s.telemetry,
-              s.chosenActions,
-              Math.max(1, s.members.length),
-              allReady,
-            );
-            audioSynth.playSuccess();
-            setOutcome(result);
-            setPhase('debrief');
-            if (s.roomId) {
-              void completeRoomSimulation(s.roomId, result.totalScore, result.grade).catch(
-                () => {},
-              );
-            }
-          }
-          return next;
+      const activeInstruments = snap.nasaInstruments.filter((i) => i.enabled);
+      if (activeInstruments.length > 0) {
+        const col = Math.floor(((nextOrbit.subSatLonDeg + 180) / 360) * 36) % 36;
+        const row = Math.floor(((nextOrbit.subSatLatDeg + 90) / 180) * 18) % 18;
+        const key = `${col}:${row}`;
+        setScannedTiles((prevTiles) => {
+          if (prevTiles.has(key)) return prevTiles;
+          const updated = new Set(prevTiles);
+          updated.add(key);
+          return updated;
         });
       }
 
-      rafId = requestAnimationFrame(step);
-    };
+      // 2. Step Spacecraft Bus, Solar Alignment, Canadarm Drift & Real-Time Hazards
+      const instDrawW = activeInstruments.reduce((sum, i) => sum + i.powerDrawW, 0) + 115;
+      setOpsState((prevOps) => {
+        const nextSunAngle = Number(((prevOps.sunAngleDeg + 0.35 * dtSec) % 360).toFixed(1));
+        const solarErr = angleDiffDeg(prevOps.solarPanelAngleDeg, nextSunAngle);
+        const solarEfficiency = Math.max(0.15, Math.cos((solarErr * Math.PI) / 180));
+        const powerGenW = nextOrbit.inEclipse ? 30 : Math.round(520 * solarEfficiency);
+        const netPowerW = powerGenW - instDrawW;
+        const nextBattery = Math.max(
+          5,
+          Math.min(100, Number((prevOps.batteryPct + (netPowerW / 320) * dtSec).toFixed(1))),
+        );
 
-    rafId = requestAnimationFrame(step);
-    return () => cancelAnimationFrame(rafId);
-  }, [phase]);
+        // Canadarm target gentle floating drift inside cargo bay [-0.76..0.76] x [0.34..0.92]
+        let nextTx = prevOps.canadarm.targetX + prevOps.canadarm.driftVx * (0.06 * simSpeedMult);
+        let nextTy = prevOps.canadarm.targetY + prevOps.canadarm.driftVy * (0.06 * simSpeedMult);
+        let nextVx = prevOps.canadarm.driftVx;
+        let nextVy = prevOps.canadarm.driftVy;
+        if (nextTx > 0.76 || nextTx < -0.76) {
+          nextVx = -nextVx;
+          nextTx = Math.max(-0.76, Math.min(0.76, nextTx));
+        }
+        if (nextTy > 0.92 || nextTy < 0.34) {
+          nextVy = -nextVy;
+          nextTy = Math.max(0.34, Math.min(0.92, nextTy));
+        }
 
-  const handleResolveAnomaly = (choice: AnomalyChoice) => {
-    if (!activeAnomaly) return;
-    audioSynth.playSelect();
-    setResolvedAnomalyIds((prev) => [...prev, activeAnomaly.id]);
-    setChosenActions((prev) => [
-      ...prev,
-      {
-        scienceDelta: choice.scienceDelta,
-        marginDelta: choice.marginDelta,
-        collabDelta: choice.collabDelta,
-        powerShiftW: choice.powerShiftW,
-        dataShiftPct: choice.dataShiftPct,
-      },
-    ]);
-    setActiveAnomaly(null);
-  };
+        let nextHazard = prevOps.activeHazard;
+        let nextSurvived = prevOps.hazardsSurvived;
+        let nextFailed = prevOps.hazardsFailed;
+        let nextHull = prevOps.hullIntegrityPct;
+        let nextRad = prevOps.radiationDosePct;
+        let batteryAfterHazard = nextBattery;
 
-  const handleIterateDesign = async (targetPhase: 'assembly' | 'planner') => {
-    if (outcome) {
-      setPreviousScore(outcome.totalScore);
-    }
-    setOutcome(null);
-    if (roomId && roomState) {
-      await iterateRoomDesign(roomId, (roomState.runCount || 1) + 1);
-    } else {
-      setSoloRunCount((c) => c + 1);
-    }
-    setPhase(targetPhase);
-  };
+        if (nextHazard) {
+          const shieldAligned = angleDiffDeg(prevOps.shieldAngleDeg, nextSunAngle) <= 22;
+          const lowPayloadLoad = activeInstruments.length <= 2;
 
-  const handleSaveMission = async () => {
-    if (!user || !outcome || savedMissionId) return;
-    setSavingMission(true);
-    try {
-      const id = await saveMissionRecord(
-        user,
-        config,
-        telemetry,
-        outcome,
-        roomId ? 'team' : 'solo',
-        roomId || '',
+          if (nextHazard.type === 'solar-flare' && shieldAligned && lowPayloadLoad) {
+            audioSynth.playSuccess();
+            nextSurvived += 1;
+            nextHazard = null;
+          } else if (nextHazard.type === 'eclipse-drain' && (lowPayloadLoad || netPowerW >= 0)) {
+            audioSynth.playSuccess();
+            nextSurvived += 1;
+            nextHazard = null;
+          } else {
+            const rem = Number((nextHazard.timeRemainingSec - 0.14 * simSpeedMult).toFixed(1));
+            if (rem <= 0) {
+              audioSynth.playAlert();
+              nextFailed += 1;
+              if (nextHazard.type === 'debris') {
+                nextHull = Math.max(15, nextHull - 18);
+                setCsaChallenges((c) => ({
+                  ...c,
+                  debrisAlertActive: false,
+                  lastChallengeFeedback: 'Debris impact grazed secondary radiator (-18% Hull Integrity)!',
+                }));
+              } else if (nextHazard.type === 'solar-flare') {
+                nextRad = Math.min(100, nextRad + 22);
+                nextHull = Math.max(15, nextHull - 10);
+              } else {
+                batteryAfterHazard = Math.max(5, batteryAfterHazard - 20);
+              }
+              nextHazard = null;
+            } else {
+              nextHazard = { ...nextHazard, timeRemainingSec: rem };
+            }
+          }
+        } else if (
+          snap.currentNasaSegment === 'space' &&
+          nextElapsed - lastAutoHazardElapsedRef.current >= 58
+        ) {
+          lastAutoHazardElapsedRef.current = nextElapsed;
+          const drill = buildHazardSpec();
+          nextHazard = drill;
+          audioSynth.playAlert();
+          if (drill.type === 'debris') {
+            setCsaChallenges((c) => ({
+              ...c,
+              debrisAlertActive: true,
+              lastChallengeFeedback: 'DEBRIS CONJUNCTION ALERT: Fire a ≥ 25 m/s burn or use the emergency dodge button!',
+            }));
+          }
+        }
+
+        // Sync CSA solar alignment achievement cleanly when aligned within 20°
+        if (solarErr <= 20) {
+          setCsaChallenges((c) =>
+            c.solarArraysAligned
+              ? c
+              : {
+                  ...c,
+                  solarArraysAligned: true,
+                  challengePoints: c.challengePoints + 30,
+                  lastChallengeFeedback: 'Solar wings locked onto Sun Vector (+30 CSA Ops pts).',
+                },
+          );
+        }
+
+        return {
+          ...prevOps,
+          sunAngleDeg: nextSunAngle,
+          batteryPct: batteryAfterHazard,
+          hullIntegrityPct: nextHull,
+          radiationDosePct: nextRad,
+          activeHazard: nextHazard,
+          hazardsSurvived: nextSurvived,
+          hazardsFailed: nextFailed,
+          canadarm: {
+            ...prevOps.canadarm,
+            targetX: Number(nextTx.toFixed(3)),
+            targetY: Number(nextTy.toFixed(3)),
+            driftVx: nextVx,
+            driftVy: nextVy,
+            targetAngleDeg: Number(((prevOps.canadarm.targetAngleDeg + 0.6 * dtSec) % 360).toFixed(1)),
+          },
+        };
+      });
+
+      // 3. Step Ground Station Line-of-Sight, Dish Lock & SSR Downlink
+      let targetStation = GROUND_STATIONS[0];
+      let targetCheck = checkLineOfSight(
+        snap.selectedObjective.targetBody,
+        targetStation,
+        nextOrbit.subSatLatDeg,
+        nextOrbit.subSatLonDeg,
+        nextOrbit.altitudeKm,
+        nextOrbit.orbitalSpeedKms,
       );
-      setSavedMissionId(id);
-      audioSynth.playSuccess();
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Unable to save mission.');
-    } finally {
-      setSavingMission(false);
-    }
-  };
 
-  const handlePublishLeaderboard = async () => {
-    if (!user || !outcome || publishedLeaderboardId) return;
-    setPublishingLeaderboard(true);
-    try {
-      const id = await publishLeaderboardEntry(
-        user,
-        config,
-        telemetry,
-        outcome,
-        roomId ? 'team' : 'solo',
-        roomState?.challengeMode || 'cooperative',
-        roomId ? roomState?.title || `Team ${roomId}` : user.displayName || 'Solo Architect',
-      );
-      setPublishedLeaderboardId(id);
-      audioSynth.playSuccess();
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Unable to publish to leaderboard.');
-    } finally {
-      setPublishingLeaderboard(false);
-    }
-  };
+      const pinnedStation = snap.manualStationId
+        ? GROUND_STATIONS.find((s) => s.id === snap.manualStationId)
+        : null;
 
-  const handleLoadConfig = (nextConfig: MissionConfig, label: string) => {
-    handleUpdateConfig(nextConfig, label);
-    if (phase === 'title' || phase === 'briefing') {
-      setPhase('assembly');
-    }
-  };
-
-  const handleSceneSubsystemSelect = (tab: SubsystemTab) => {
-    audioSynth.playSelect();
-    const mapped: BuilderCategory =
-      tab === 'payload'
-        ? 'science'
-        : tab === 'power'
-          ? 'power'
-          : tab === 'team'
-            ? 'team'
-            : 'bus';
-    setActiveCategory(mapped);
-    setDockCollapsed(false);
-  };
-
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-
-      if (
-        e.key === 'Enter' &&
-        phase === 'title' &&
-        !showTeamModal &&
-        !showArchiveModal &&
-        !showGuideModal &&
-        !showDictionaryModal
-      ) {
-        e.preventDefault();
-        handleStartSolo();
-      } else if ((e.key === 'h' || e.key === 'H') && phase === 'assembly') {
-        e.preventDefault();
-        setDockCollapsed((prev) => !prev);
-      } else if (e.key === 'Escape') {
-        setShowTeamModal(false);
-        setShowArchiveModal(false);
-        setShowGuideModal(false);
-        setShowDictionaryModal(false);
+      if (pinnedStation) {
+        targetStation = pinnedStation;
+        targetCheck = checkLineOfSight(
+          snap.selectedObjective.targetBody,
+          pinnedStation,
+          nextOrbit.subSatLatDeg,
+          nextOrbit.subSatLonDeg,
+          nextOrbit.altitudeKm,
+          nextOrbit.orbitalSpeedKms,
+        );
+      } else {
+        let bestElev = -999;
+        let foundLos = false;
+        for (const st of GROUND_STATIONS) {
+          const chk = checkLineOfSight(
+            snap.selectedObjective.targetBody,
+            st,
+            nextOrbit.subSatLatDeg,
+            nextOrbit.subSatLonDeg,
+            nextOrbit.altitudeKm,
+            nextOrbit.orbitalSpeedKms,
+          );
+          if (chk.hasLineOfSight && chk.elevationAngleDeg > bestElev) {
+            bestElev = chk.elevationAngleDeg;
+            targetStation = st;
+            targetCheck = chk;
+            foundLos = true;
+          }
+        }
+        if (!foundLos) {
+          targetStation =
+            GROUND_STATIONS.find((s) => s.body === snap.selectedObjective.targetBody) || GROUND_STATIONS[0];
+          targetCheck = checkLineOfSight(
+            snap.selectedObjective.targetBody,
+            targetStation,
+            nextOrbit.subSatLatDeg,
+            nextOrbit.subSatLonDeg,
+            nextOrbit.altitudeKm,
+            nextOrbit.orbitalSpeedKms,
+          );
+        }
       }
+
+      const prevComm = snap.groundComm;
+      let nextDishAz = prevComm.dishAzimuthDeg;
+      let nextDishEl = prevComm.dishElevationDeg;
+      if (prevComm.servoAssistEnabled && targetCheck.hasLineOfSight) {
+        const azDiff = ((targetCheck.navTelemetry.azimuthDeg - nextDishAz + 540) % 360) - 180;
+        nextDishAz = Number(((nextDishAz + azDiff * 0.25 + 360) % 360).toFixed(1));
+        nextDishEl = Number(
+          (nextDishEl + (targetCheck.navTelemetry.elevationDeg - nextDishEl) * 0.25).toFixed(1),
+        );
+      }
+
+      const lockResult = targetCheck.hasLineOfSight
+        ? computeDishAlignmentLock(
+            nextDishAz,
+            nextDishEl,
+            targetCheck.navTelemetry.azimuthDeg,
+            targetCheck.navTelemetry.elevationDeg,
+            prevComm.bandMode,
+          )
+        : { angularErrorDeg: 90, lockQualityPct: 0 };
+
+      const bandMultiplier = prevComm.bandMode === 'Ka-Band' ? 1.0 : 0.72;
+      const effectiveDownlinkMbps = targetCheck.hasLineOfSight
+        ? Math.round(
+            targetStation.maxDataRateMbps *
+              bandMultiplier *
+              (lockResult.lockQualityPct / 100) *
+              (prevComm.allocatedBandwidthPct / 100),
+          )
+        : 0;
+
+      const activeDataRateMbps = activeInstruments.reduce((sum, i) => sum + i.dataRateMbps, 0);
+      const dataGenGB = (activeDataRateMbps * dtSec) / 8000;
+      let nextBuffer = Math.min(prevComm.bufferCapacityGB, prevComm.bufferStoredGB + dataGenGB);
+      let nextDownlinked = prevComm.totalDataDownlinkedGB;
+
+      if (targetCheck.hasLineOfSight && effectiveDownlinkMbps > 0 && nextBuffer > 0) {
+        const maxDownlinkGB = (effectiveDownlinkMbps * dtSec) / 8000;
+        const downlinkedThisStep = Math.min(nextBuffer, maxDownlinkGB);
+        nextBuffer = Math.max(0, nextBuffer - downlinkedThisStep);
+        nextDownlinked += downlinkedThisStep;
+      }
+
+      const enteredLos = targetCheck.hasLineOfSight && !prevComm.hasLineOfSight;
+
+      // Flush captured science landmarks to downlinked status when dish lock >= 50%
+      if (targetCheck.hasLineOfSight && lockResult.lockQualityPct >= 50) {
+        const hasPending = snap.landmarks.some((l) => l.captured && !l.downlinked);
+        if (hasPending) {
+          setLandmarks((prevLms) =>
+            prevLms.map((l) =>
+              l.captured && !l.downlinked
+                ? { ...l, downlinked: true, signalQualityPct: Math.max(l.signalQualityPct, lockResult.lockQualityPct) }
+                : l,
+            ),
+          );
+        }
+      }
+
+      setGroundComm({
+        activeStationId: targetStation.id,
+        hasLineOfSight: targetCheck.hasLineOfSight,
+        elevationAngleDeg: targetCheck.elevationAngleDeg,
+        distanceKm: targetCheck.distanceKm,
+        downlinkActive: targetCheck.hasLineOfSight && effectiveDownlinkMbps > 0 && nextBuffer > 0,
+        currentDownlinkMbps: effectiveDownlinkMbps,
+        isBlackout: !targetCheck.hasLineOfSight,
+        bufferStoredGB: nextBuffer,
+        bufferCapacityGB: prevComm.bufferCapacityGB,
+        totalDataDownlinkedGB: nextDownlinked,
+        dishAzimuthDeg: nextDishAz,
+        dishElevationDeg: nextDishEl,
+        dishLockQualityPct: lockResult.lockQualityPct,
+        bandMode: prevComm.bandMode,
+        allocatedBandwidthPct: prevComm.allocatedBandwidthPct,
+        servoAssistEnabled: prevComm.servoAssistEnabled,
+        passTimeRemainingSec: targetCheck.hasLineOfSight
+          ? Math.max(15, Math.round(90 + targetCheck.elevationAngleDeg * 2.2))
+          : 0,
+        totalPassContacts: prevComm.totalPassContacts + (enteredLos ? 1 : 0),
+        navTelemetry: targetCheck.navTelemetry,
+      });
+
+      // 4. Append GMAT telemetry sample every 12 ticks (~0.72s)
+      if (simTickCounterRef.current % 12 === 0) {
+        setTelemetryHistory((prevHistory) => {
+          const sample: GmatTelemetrySample = {
+            timestampSec: Math.round(nextElapsed),
+            altitudeKm: nextOrbit.altitudeKm,
+            orbitalSpeedKms: nextOrbit.orbitalSpeedKms,
+            propellantRemainingKg: snap.propellantBudgetKg,
+            eccentricity: nextOrbit.eccentricity,
+            downlinkRateMbps: effectiveDownlinkMbps,
+          };
+          const next = [...prevHistory, sample];
+          return next.length > 70 ? next.slice(next.length - 70) : next;
+        });
+      }
+    }, 60);
+
+    return () => clearInterval(interval);
+  }, [appView, isSimPaused, simSpeedMult, buildHazardSpec]);
+
+  // Objective Change Handler
+  const handleSelectObjective = (obj: NasaObjectiveSpec) => {
+    audioSynth.playSelect();
+    setSelectedObjective(obj);
+    setPropellantBudgetKg(obj.propellantBudgetKg);
+    setLandmarks(getSurfaceLandmarksForObjective(obj));
+    setOpsState(createInitialOpsState());
+    setManualStationId(null);
+
+    const targetDv = calculateTargetDeltaV(obj.targetBody, obj.targetAltitudeKm, obj.regime);
+    setBurnState({
+      status: 'completed',
+      throttlePct: 100,
+      burnDurationSec: 180,
+      targetDeltaVKms: targetDv,
+      deliveredDeltaVKms: targetDv,
+      propellantUsedKg: 280,
+      outcomeType: 'nominal',
+      outcomeSummary: `Nominal Injection: Spacecraft placed into ${obj.targetAltitudeKm} km orbit around ${obj.targetBody.toUpperCase()}.`,
+    });
+
+    const b = CELESTIAL_BODIES[obj.targetBody];
+    setOrbitState({
+      altitudeKm: obj.targetAltitudeKm,
+      periapsisKm: obj.periapsisKm ?? Math.max(0, obj.targetAltitudeKm - 25),
+      apoapsisKm: obj.apoapsisKm ?? obj.targetAltitudeKm + 25,
+      eccentricity: obj.targetEccentricity ?? 0.001,
+      inclinationDeg: obj.targetInclinationDeg,
+      semiMajorAxisKm: b.radiusKm + obj.targetAltitudeKm,
+      periodMinutes: calculateOrbitalPeriodMinutes(obj.targetBody, obj.targetAltitudeKm, obj.targetEccentricity ?? 0),
+      orbitalSpeedKms: Number(Math.sqrt(b.mu / (b.radiusKm + obj.targetAltitudeKm)).toFixed(2)),
+      trueAnomalyDeg: 0,
+      raanDeg: obj.raanDeg ?? 45.0,
+      argPeriapsisDeg: obj.argPeriapsisDeg ?? 0.0,
+      subSatLatDeg: 0,
+      subSatLonDeg: 0,
+      inEclipse: false,
+      perturbations: {
+        j2NodalPrecessionDegPerDay: -0.985,
+        j2ApsidalDriftDegPerDay: -3.24,
+        atmosphericDragDecayKmPerDay: 0.002,
+        solarRadiationPressureScale: 1.0,
+      },
+    });
+  };
+
+  // Time-warp orbiter cleanly to maneuver node true anomaly
+  const handleWarpToAnomaly = useCallback((targetAnomalyDeg: number) => {
+    audioSynth.playSelect();
+    setOrbitState((prev) => {
+      const b = CELESTIAL_BODIES[selectedObjective.targetBody];
+      const deg2rad = Math.PI / 180;
+      const nuRad = targetAnomalyDeg * deg2rad;
+      const incRad = prev.inclinationDeg * deg2rad;
+      const subSatLatDeg = Number((Math.asin(Math.sin(incRad) * Math.sin(nuRad)) / deg2rad).toFixed(2));
+      const subSatLonRad = Math.atan2(Math.cos(incRad) * Math.sin(nuRad), Math.cos(nuRad));
+      const subSatLonDeg = Number((((((subSatLonRad / deg2rad) + 180) % 360) + 360) % 360 - 180).toFixed(2));
+      const a = b.radiusKm + prev.altitudeKm;
+      const r = (a * (1 - prev.eccentricity ** 2)) / (1 + prev.eccentricity * Math.cos(nuRad));
+      const currentAltKm = Math.round(r - b.radiusKm);
+      const orbitalSpeedKms = Number(Math.sqrt(Math.max(0.1, b.mu * (2 / r - 1 / a))).toFixed(2));
+
+      return {
+        ...prev,
+        trueAnomalyDeg: Number(targetAnomalyDeg.toFixed(2)),
+        altitudeKm: currentAltKm,
+        orbitalSpeedKms,
+        subSatLatDeg,
+        subSatLonDeg,
+        inEclipse: Math.cos(nuRad) < -0.35 && currentAltKm < 2000,
+      };
+    });
+  }, [selectedObjective.targetBody]);
+
+  // Impulsive Maneuver Burn Executor (with burn accuracy & debris hazard evasion)
+  const handleApplyManeuverBurn = (
+    deltaVVector: { progradeMs: number; normalMs: number; radialMs: number },
+    accuracyPct = 92,
+  ) => {
+    const dvMagnitudeMs = Math.sqrt(
+      deltaVVector.progradeMs ** 2 + deltaVVector.normalMs ** 2 + deltaVVector.radialMs ** 2,
+    );
+    if (dvMagnitudeMs <= 0) return;
+
+    audioSynth.playMountPart();
+
+    const isp = selectedPropulsion === 'chemical' ? 325 : 3100;
+    const exhaustVelocityMs = isp * G0;
+    const currentWetMassKg =
+      420 +
+      propellantBudgetKg +
+      nasaInstruments.reduce((sum, i) => sum + (i.enabled ? i.massKg : 0), 0);
+    const propellantSpentKg = Math.min(
+      propellantBudgetKg,
+      Math.round(currentWetMassKg * (1 - Math.exp(-dvMagnitudeMs / exhaustVelocityMs))),
+    );
+    setPropellantBudgetKg((p) => Math.max(0, p - propellantSpentKg));
+
+    const body = CELESTIAL_BODIES[selectedObjective.targetBody];
+    setOrbitState((prev) => {
+      const altDeltaKm = Math.round((deltaVVector.progradeMs / 1000) * (prev.altitudeKm + body.radiusKm) * 0.28);
+      const nextAlt = Math.max(120, prev.altitudeKm + altDeltaKm);
+      const incDeltaDeg = Number(
+        ((deltaVVector.normalMs / Math.max(1, prev.orbitalSpeedKms * 1000)) * (180 / Math.PI)).toFixed(1),
+      );
+      const nextInc = Math.max(0, Math.min(98, Number((prev.inclinationDeg + incDeltaDeg).toFixed(1))));
+      const eccShift = Math.abs(deltaVVector.progradeMs) / 1400;
+      const nextEcc =
+        deltaVVector.progradeMs >= 0
+          ? Math.min(0.75, Number((prev.eccentricity + eccShift).toFixed(3)))
+          : Math.max(0.0, Number((prev.eccentricity - eccShift * 0.8).toFixed(3)));
+
+      const rMean = body.radiusKm + nextAlt;
+      const speed = Number(Math.sqrt(body.mu / rMean).toFixed(2));
+      const period = calculateOrbitalPeriodMinutes(selectedObjective.targetBody, nextAlt, nextEcc);
+      const periapsisKm = Math.max(80, Math.round(rMean * (1 - nextEcc) - body.radiusKm));
+      const apoapsisKm = Math.max(periapsisKm + 10, Math.round(rMean * (1 + nextEcc) - body.radiusKm));
+
+      return {
+        ...prev,
+        altitudeKm: nextAlt,
+        periapsisKm,
+        apoapsisKm,
+        eccentricity: nextEcc,
+        inclinationDeg: nextInc,
+        semiMajorAxisKm: Math.round(rMean),
+        periodMinutes: period,
+        orbitalSpeedKms: speed,
+      };
+    });
+
+    setOpsState((prev) => {
+      let nextHazard = prev.activeHazard;
+      let nextSurvived = prev.hazardsSurvived;
+      if (dvMagnitudeMs >= 25 && prev.activeHazard?.type === 'debris') {
+        nextHazard = null;
+        nextSurvived += 1;
+      }
+      return {
+        ...prev,
+        activeHazard: nextHazard,
+        hazardsSurvived: nextSurvived,
+        lastManeuverAccuracyPct: Math.round((prev.lastManeuverAccuracyPct + accuracyPct) / 2),
+      };
+    });
+
+    // Check CSA Debris Conjunction Evasion resolution
+    if (dvMagnitudeMs >= 25) {
+      setCsaChallenges((prev) => {
+        if (!prev.debrisAlertActive) return prev;
+        const firstDodge = prev.debrisAvoidedCount === 0;
+        audioSynth.playSuccess();
+        return {
+          ...prev,
+          debrisAlertActive: false,
+          debrisAvoidedCount: prev.debrisAvoidedCount + 1,
+          challengePoints: prev.challengePoints + (firstDodge ? 30 : 0),
+          lastChallengeFeedback: `Conjunction Evaded! ${Math.round(dvMagnitudeMs)} m/s burn cleared the orbital debris corridor${firstDodge ? ' (+30 pts)' : ''}.`,
+        };
+      });
+    }
+  };
+
+  // Emergency Payload Shedding (keeps only the lowest-power single instrument active)
+  const handleShedHeavyPayloads = useCallback(() => {
+    audioSynth.playSelect();
+    setNasaInstruments((prev) => {
+      const enabled = prev.filter((i) => i.enabled).sort((a, b) => a.powerDrawW - b.powerDrawW);
+      const keepId = enabled[0]?.id;
+      return prev.map((i) => ({ ...i, enabled: i.id === keepId }));
+    });
+  }, []);
+
+  // Manual or Scheduled Space Hazard Trigger
+  const handleTriggerHazardDrill = useCallback(
+    (kind?: 'debris' | 'solar-flare' | 'eclipse-drain') => {
+      audioSynth.playAlert();
+      const hazard = buildHazardSpec(kind);
+      setOpsState((prev) => ({ ...prev, activeHazard: hazard }));
+      if (hazard.type === 'debris') {
+        setCsaChallenges((prev) => ({
+          ...prev,
+          debrisAlertActive: true,
+          lastChallengeFeedback: 'DEBRIS CONJUNCTION ALERT: Fire a ≥ 25 m/s burn before T-0!',
+        }));
+      }
+    },
+    [buildHazardSpec],
+  );
+
+  // CSA Canadarm3 Grapple Attempt
+  const handleResolveCanadarmCapture = useCallback(() => {
+    const snap = simSnapshotRef.current;
+    const arm = snap.opsState.canadarm;
+    const kin = computeCanadarmEndEffector(arm.shoulderDeg, arm.elbowDeg, arm.wristDeg);
+    const dist = Math.hypot(kin.endX - arm.targetX, kin.endY - arm.targetY);
+
+    if (dist > 0.16) {
+      audioSynth.playAlert();
+      setOpsState((prev) => ({
+        ...prev,
+        canadarm: {
+          ...prev.canadarm,
+          lastOpFeedback: `End-effector missed by ${(dist * 10).toFixed(1)} m — align within 1.6 m of the amber docking ring!`,
+        },
+      }));
+      return;
+    }
+
+    audioSynth.playSuccess();
+    const order: CanadarmTargetType[] = ['cubesat', 'gateway-module', 'solar-wing'];
+    const nextType = order[(arm.completedCount + 1) % order.length];
+    const nextX = Number((((Math.random() - 0.5) * 1.1)).toFixed(2));
+    const nextY = Number((0.44 + Math.random() * 0.42).toFixed(2));
+
+    setOpsState((prev) => ({
+      ...prev,
+      hullIntegrityPct: Math.min(100, prev.hullIntegrityPct + 12),
+      canadarm: {
+        ...prev.canadarm,
+        clampClosed: true,
+        targetType: nextType,
+        targetX: nextX,
+        targetY: nextY,
+        completedCount: prev.canadarm.completedCount + 1,
+        lastOpFeedback: `Grapple LOCKED on ${arm.targetType.toUpperCase()}! Hull serviced (+12%). Next payload queued: ${nextType.toUpperCase()}.`,
+      },
+    }));
+
+    setCsaChallenges((prev) => ({
+      ...prev,
+      challengePoints: Math.min(90, prev.challengePoints + 20),
+      lastChallengeFeedback: `Canadarm3 autonomous capture succeeded on ${arm.targetType}!`,
+    }));
+  }, []);
+
+  // Active Surface Landmark Scanner
+  const handleFireInstrumentScan = useCallback((landmarkId?: string) => {
+    const snap = simSnapshotRef.current;
+    const effectiveLat = snap.orbitState.subSatLatDeg + snap.opsState.sensorSlewOffsetDeg;
+    const target = landmarkId
+      ? snap.landmarks.find((l) => l.id === landmarkId)
+      : snap.landmarks.find((l) => !l.captured);
+
+    if (!target) {
+      return { capturedName: null, message: 'All planetary landmarks already scanned!' };
+    }
+
+    const instEnabled = snap.nasaInstruments.some((i) => i.id === target.requiredInstrument && i.enabled);
+    if (!instEnabled) {
+      audioSynth.playAlert();
+      return {
+        capturedName: null,
+        message: `Power ON ${target.requiredInstrument.toUpperCase()} in the Payload Power Bus below before scanning ${target.name}!`,
+      };
+    }
+
+    // If user clicked "Slew & Fire" on a landmark outside window, gently slew orbiter closer or capture with gimbal
+    const dLat = Math.abs(target.latDeg - effectiveLat);
+    const dLon = Math.min(
+      Math.abs(target.lonDeg - snap.orbitState.subSatLonDeg),
+      360 - Math.abs(target.lonDeg - snap.orbitState.subSatLonDeg),
+    );
+    const angDist = Math.hypot(dLat, dLon);
+    const signalQuality = Math.max(68, Math.min(99, Math.round(99 - angDist * 0.25)));
+
+    audioSynth.playSuccess();
+    setLandmarks((prev) =>
+      prev.map((l) =>
+        l.id === target.id ? { ...l, captured: true, signalQualityPct: signalQuality } : l,
+      ),
+    );
+
+    // Paint scanned tiles around the landmark
+    setScannedTiles((prevTiles) => {
+      const updated = new Set(prevTiles);
+      const baseCol = Math.floor(((target.lonDeg + 180) / 360) * 36) % 36;
+      const baseRow = Math.floor(((target.latDeg + 90) / 180) * 18) % 18;
+      for (let dc = -2; dc <= 2; dc++) {
+        for (let dr = -1; dr <= 1; dr++) {
+          const c = (baseCol + dc + 36) % 36;
+          const r = Math.max(0, Math.min(17, baseRow + dr));
+          updated.add(`${c}:${r}`);
+        }
+      }
+      return updated;
+    });
+
+    // Queue captured packet into SSR onboard buffer
+    setGroundComm((prev) => ({
+      ...prev,
+      bufferStoredGB: Math.min(prev.bufferCapacityGB, Number((prev.bufferStoredGB + 8.5).toFixed(1))),
+    }));
+
+    // Unlock CSA RADARSAT Polar challenge if radar-sar or high-latitude landmark scanned
+    if (Math.abs(target.latDeg) >= 55 || target.requiredInstrument === 'radar-sar') {
+      setCsaChallenges((prev) => ({
+        ...prev,
+        polarRadarCaptured: true,
+        challengePoints: prev.polarRadarCaptured ? prev.challengePoints : Math.min(90, prev.challengePoints + 30),
+        lastChallengeFeedback: `High-latitude swath captured at ${target.name}! Packet queued in SSR for Ground Segment downlink.`,
+      }));
+    }
+
+    return {
+      capturedName: target.name,
+      message: `SCANNED: ${target.name} (${signalQuality}% signal quality, +8.5 GB queued in SSR).`,
     };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [phase, showTeamModal, showArchiveModal, showGuideModal, showDictionaryModal]);
+  }, []);
 
-  const sceneMode: 'title' | 'hangar' | 'planner' | 'orbit' =
-    phase === 'title'
-      ? 'title'
-      : phase === 'planner'
-        ? 'planner'
-        : phase === 'simulating' || phase === 'debrief'
-          ? 'orbit'
-          : 'hangar';
+  // Ground Segment Interactive Dish & Link Handlers
+  const handleSteerDish = useCallback((azimuthDeg: number, elevationDeg: number) => {
+    setGroundComm((prev) => ({
+      ...prev,
+      dishAzimuthDeg: Number(((azimuthDeg + 360) % 360).toFixed(1)),
+      dishElevationDeg: Math.max(5, Math.min(90, Number(elevationDeg.toFixed(1)))),
+    }));
+  }, []);
 
-  const currentPhaseIndex =
-    simProgress < 0.22 ? 0 : simProgress < 0.45 ? 1 : simProgress < 0.72 ? 2 : 3;
-  const activeRunCount = roomId ? roomState?.runCount || 1 : soloRunCount;
+  const handleSelectStation = useCallback((stationId: string) => {
+    audioSynth.playSelect();
+    setManualStationId(stationId);
+    setGroundComm((prev) => ({ ...prev, activeStationId: stationId }));
+  }, []);
+
+  const handleChangeBandMode = useCallback((band: 'Ka-Band' | 'X-Band') => {
+    audioSynth.playSelect();
+    setGroundComm((prev) => ({ ...prev, bandMode: band }));
+  }, []);
+
+  const handleChangeBandwidthPct = useCallback((pct: number) => {
+    setGroundComm((prev) => ({ ...prev, allocatedBandwidthPct: Math.max(25, Math.min(100, pct)) }));
+  }, []);
+
+  const handleToggleServoAssist = useCallback(() => {
+    audioSynth.playSelect();
+    setGroundComm((prev) => ({ ...prev, servoAssistEnabled: !prev.servoAssistEnabled }));
+  }, []);
+
+  const handleFlushSsrBurst = useCallback(() => {
+    const snap = simSnapshotRef.current;
+    if (!snap.groundComm.hasLineOfSight || snap.groundComm.dishLockQualityPct < 60) {
+      audioSynth.playAlert();
+      return;
+    }
+    audioSynth.playSuccess();
+    setGroundComm((prev) => {
+      const burstGB = Math.min(prev.bufferStoredGB, 24);
+      return {
+        ...prev,
+        bufferStoredGB: Math.max(0, Number((prev.bufferStoredGB - burstGB).toFixed(1))),
+        totalDataDownlinkedGB: Number((prev.totalDataDownlinkedGB + burstGB).toFixed(1)),
+      };
+    });
+    setLandmarks((prev) =>
+      prev.map((l) =>
+        l.captured && !l.downlinked
+          ? { ...l, downlinked: true, signalQualityPct: Math.max(l.signalQualityPct, snap.groundComm.dishLockQualityPct) }
+          : l,
+      ),
+    );
+  }, []);
+
+  const handleUpdateOrbitParams = (altKm: number, ecc: number, incDeg: number) => {
+    const body = CELESTIAL_BODIES[selectedObjective.targetBody];
+    const r = body.radiusKm + altKm;
+    const speed = Number(Math.sqrt(body.mu / r).toFixed(2));
+    const period = calculateOrbitalPeriodMinutes(selectedObjective.targetBody, altKm, ecc);
+
+    setOrbitState((prev) => ({
+      ...prev,
+      altitudeKm: altKm,
+      eccentricity: ecc,
+      inclinationDeg: incDeg,
+      semiMajorAxisKm: Math.round(r),
+      periodMinutes: period,
+      orbitalSpeedKms: speed,
+      periapsisKm: Math.max(80, Math.round(r * (1 - ecc) - body.radiusKm)),
+      apoapsisKm: Math.max(90, Math.round(r * (1 + ecc) - body.radiusKm)),
+    }));
+  };
+
+  const handleToggleInstrument = (id: string) => {
+    audioSynth.playSelect();
+    setNasaInstruments((prev) =>
+      prev.map((i) => (i.id === id ? { ...i, enabled: !i.enabled } : i)),
+    );
+  };
+
+  const formatMET = (totalSec: number) => {
+    const days = Math.floor(totalSec / 86400);
+    const hours = Math.floor((totalSec % 86400) / 3600);
+    const mins = Math.floor((totalSec % 3600) / 60);
+    const secs = Math.floor(totalSec % 60);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `MET +${String(days).padStart(3, '0')}d ${pad(hours)}h:${pad(mins)}m:${pad(secs)}s`;
+  };
 
   return (
-    <main className="relative h-screen w-screen overflow-hidden bg-[#050811]">
-      <SpacecraftScene
-        config={config}
-        sceneMode={sceneMode}
-        explodeAmount={phase === 'assembly' ? explodeAmount : 0}
-        cameraPreset={cameraPreset}
-        cameraPresetNonce={cameraPresetNonce}
-        simProgress={simProgress}
-        onSelectSubsystem={handleSceneSubsystemSelect}
-      />
-
-      {phase !== 'title' && (
-        <PhaseHeader
-          phase={phase}
-          config={config}
-          telemetry={telemetry}
-          roomId={roomId}
-          memberCount={Math.max(1, members.length)}
-          runCount={activeRunCount}
-          muted={muted}
-          onNavigatePhase={(target) => {
-            audioSynth.playSelect();
-            if (target === 'title') setExplodeAmount(0);
-            setPhase(target);
-          }}
-          onToggleMute={() => {
-            const next = !muted;
-            audioSynth.muted = next;
-            setMuted(next);
-          }}
-          onOpenDictionary={() => setShowDictionaryModal(true)}
-          onOpenTeamModal={() => setShowTeamModal(true)}
-          onOpenArchive={() => setShowArchiveModal(true)}
-          onLaunchMission={() => void handleStartSimulationClick()}
-        />
+    <div className="relative h-screen w-screen overflow-y-auto overflow-x-hidden bg-[#040711] text-slate-100 flex flex-col font-sans select-none">
+      {/* VIEW 1: HOMEPAGE (TitleScreen over live 3D SpacecraftScene) */}
+      {appView === 'title' && (
+        <div className="relative h-screen w-screen overflow-hidden">
+          <SpacecraftScene
+            config={classicConfig}
+            sceneMode="title"
+            explodeAmount={0}
+            cameraPreset="hero"
+            cameraPresetNonce={0}
+            simProgress={0}
+          />
+          <TitleScreen
+            user={user}
+            authLoading={authLoading}
+            difficulty={classicConfig.difficulty}
+            onSelectDifficulty={handleSelectDifficulty}
+            onSignIn={() => void handleSignIn()}
+            onSignOut={() => void handleSignOut()}
+            onStartSolo={() => {
+              audioSynth.playSelect();
+              setAppView('nasa-architect');
+              setCurrentNasaSegment('setup');
+            }}
+            onOpenTeamModal={() => {
+              audioSynth.playSelect();
+              setShowTeamModal(true);
+            }}
+            onOpenArchive={() => {
+              audioSynth.playSelect();
+              setShowArchiveModal(true);
+            }}
+            onOpenGuide={() => {
+              audioSynth.playSelect();
+              setShowGuideModal(true);
+            }}
+          />
+        </div>
       )}
 
-      {phase === 'title' && (
-        <TitleScreen
-          user={user}
-          authLoading={authLoading}
-          difficulty={config.difficulty}
-          onSelectDifficulty={handleChangeDifficulty}
-          onSignIn={() => void handleSignIn()}
-          onSignOut={() => void handleSignOut()}
-          onStartSolo={handleStartSolo}
-          onOpenTeamModal={() => setShowTeamModal(true)}
-          onOpenArchive={() => setShowArchiveModal(true)}
-          onOpenGuide={() => setShowGuideModal(true)}
-        />
+      {/* VIEW 2: NASA / GMAT / CSA 4-SEGMENT MISSION ARCHITECT */}
+      {appView === 'nasa-architect' && (
+        <>
+          <header className="sticky top-0 z-40 border-b border-slate-800 bg-[#070b16]/95 backdrop-blur-md px-4 py-2.5 shadow-2xl">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              {/* Left: Back to Homepage + Brand */}
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    audioSynth.playSelect();
+                    setAppView('title');
+                  }}
+                  className="flex items-center gap-1 border border-slate-700 bg-slate-900/90 px-2.5 py-1 text-xs font-medium text-slate-300 hover:border-cyan-400 hover:text-white transition-colors cursor-pointer"
+                  title="Return to Orbitarium Homepage"
+                >
+                  <ArrowLeft className="h-3.5 w-3.5" />
+                  <span>Home</span>
+                </button>
+
+                <div className="flex items-center gap-2">
+                  <Orbit className="h-4 w-4 text-cyan-400" />
+                  <h1 className="font-display text-lg font-black tracking-wider text-white">
+                    ORBITARIUM
+                  </h1>
+                </div>
+
+                <div className="hidden xl:flex items-center gap-2 border-l border-slate-700/80 pl-3 text-xs text-slate-400">
+                  <span className="font-mono-tab text-[10px] font-bold text-cyan-300">
+                    NASA NPR 7120.5 · GMAT · CSA
+                  </span>
+                  <span>·</span>
+                  <button
+                    type="button"
+                    onClick={() => setArchitectMode((m) => (m === 'cadet' ? 'sandbox' : 'cadet'))}
+                    className={`font-mono-tab text-[10px] font-bold px-2 py-0.5 border cursor-pointer ${
+                      architectMode === 'sandbox'
+                        ? 'border-amber-500/50 bg-amber-950/40 text-amber-300'
+                        : 'border-cyan-500/40 bg-cyan-950/40 text-cyan-300'
+                    }`}
+                  >
+                    {architectMode === 'sandbox' ? 'SANDBOX LAB' : 'CADET CHALLENGE'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Center Navigation Tabs: The 4 Major Segments + ConOps */}
+              <nav className="flex items-center gap-1 border border-slate-800 bg-slate-900/80 p-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    audioSynth.playSelect();
+                    setCurrentNasaSegment('setup');
+                  }}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${
+                    currentNasaSegment === 'setup'
+                      ? 'bg-cyan-500 text-slate-950 font-bold shadow-sm'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-800'
+                  }`}
+                >
+                  <Compass className="h-3.5 w-3.5" />
+                  <span className="hidden md:inline">Mission Setup</span>
+                  <span className="md:hidden">Setup</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    audioSynth.playSelect();
+                    setCurrentNasaSegment('launch');
+                  }}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${
+                    currentNasaSegment === 'launch'
+                      ? 'bg-amber-500 text-slate-950 font-bold shadow-sm'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-800'
+                  }`}
+                >
+                  <Rocket className="h-3.5 w-3.5" />
+                  <span>1. Launch</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    audioSynth.playSelect();
+                    setCurrentNasaSegment('space');
+                  }}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${
+                    currentNasaSegment === 'space'
+                      ? 'bg-cyan-500 text-slate-950 font-bold shadow-sm'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-800'
+                  }`}
+                >
+                  <Orbit className="h-3.5 w-3.5" />
+                  <span>2. Space</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    audioSynth.playSelect();
+                    setCurrentNasaSegment('ground');
+                  }}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${
+                    currentNasaSegment === 'ground'
+                      ? 'bg-emerald-500 text-slate-950 font-bold shadow-sm'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-800'
+                  }`}
+                >
+                  <Radio className="h-3.5 w-3.5" />
+                  <span>3. Ground</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    audioSynth.playSelect();
+                    setCurrentNasaSegment('user');
+                  }}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${
+                    currentNasaSegment === 'user'
+                      ? 'bg-purple-500 text-white font-bold shadow-sm'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-800'
+                  }`}
+                >
+                  <FileCheck2 className="h-3.5 w-3.5" />
+                  <span>4. User</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    audioSynth.playSelect();
+                    setCurrentNasaSegment('conops');
+                  }}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold transition-all cursor-pointer whitespace-nowrap ${
+                    currentNasaSegment === 'conops'
+                      ? 'bg-gradient-to-r from-cyan-500 to-emerald-400 text-slate-950 font-bold shadow-sm'
+                      : 'text-cyan-300 hover:text-white hover:bg-slate-800'
+                  }`}
+                >
+                  <Layers className="h-3.5 w-3.5" />
+                  <span>ConOps HUD</span>
+                </button>
+              </nav>
+
+              {/* Right Controls: MET Clock, Sim Ticker, Sound, Kid Dictionary */}
+              <div className="flex items-center gap-2">
+                <div className="hidden lg:flex items-center font-mono-tab text-xs border border-slate-800 bg-slate-950 px-2.5 py-1 text-cyan-300">
+                  {formatMET(missionElapsedSec)}
+                </div>
+
+                <div className="flex items-center border border-slate-800 bg-slate-900/80 p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setIsSimPaused((p) => !p)}
+                    title={isSimPaused ? 'Resume Simulation' : 'Pause Simulation'}
+                    className="p-1 text-slate-300 hover:text-white cursor-pointer"
+                  >
+                    {isSimPaused ? <Play className="h-3.5 w-3.5 text-emerald-400" /> : <Pause className="h-3.5 w-3.5" />}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSimSpeedMult((s) => (s === 1 ? 2 : s === 2 ? 5 : 1))}
+                    className="px-1.5 py-0.5 font-mono-tab text-[10px] text-cyan-300 font-bold cursor-pointer"
+                  >
+                    {simSpeedMult}x
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = !muted;
+                    audioSynth.muted = next;
+                    setMuted(next);
+                  }}
+                  className="p-1.5 border border-slate-800 bg-slate-900/70 text-slate-300 hover:text-white cursor-pointer"
+                  title={muted ? 'Unmute Audio' : 'Mute Audio'}
+                >
+                  {muted ? <VolumeX className="h-3.5 w-3.5" /> : <Volume2 className="h-3.5 w-3.5 text-cyan-400" />}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setShowDictionaryModal(true)}
+                  className="flex items-center gap-1 border border-cyan-500/40 bg-cyan-950/30 px-2.5 py-1 text-xs font-semibold text-cyan-300 hover:bg-cyan-900/50 transition-colors cursor-pointer"
+                >
+                  <BookOpen className="h-3.5 w-3.5" />
+                  <span className="hidden sm:inline">Dictionary</span>
+                </button>
+              </div>
+            </div>
+          </header>
+
+          <main className="flex-1 max-w-7xl w-full mx-auto p-4 space-y-4">
+            {currentNasaSegment === 'setup' && (
+              <MissionSetupSegment
+                architectMode={architectMode}
+                onChangeArchitectMode={setArchitectMode}
+                selectedObjective={selectedObjective}
+                onSelectObjective={handleSelectObjective}
+                selectedPropulsion={selectedPropulsion}
+                onSelectPropulsion={setSelectedPropulsion}
+                propellantBudgetKg={propellantBudgetKg}
+                onChangePropellantBudget={setPropellantBudgetKg}
+                instruments={nasaInstruments}
+                onToggleInstrument={handleToggleInstrument}
+                onProceedToLaunch={() => {
+                  audioSynth.playSelect();
+                  setCurrentNasaSegment('launch');
+                }}
+              />
+            )}
+
+            {currentNasaSegment === 'launch' && (
+              <LaunchSegment
+                architectMode={architectMode}
+                selectedObjective={selectedObjective}
+                selectedRocket={selectedRocket}
+                onSelectRocket={(r) => {
+                  audioSynth.playSelect();
+                  setSelectedRocket(r);
+                }}
+                selectedPropulsion={selectedPropulsion}
+                propellantBudgetKg={propellantBudgetKg}
+                instruments={nasaInstruments}
+                burnState={burnState}
+                onUpdateBurnState={(nextBurn) => {
+                  if (nextBurn.status === 'completed') audioSynth.playSuccess();
+                  else if (nextBurn.status === 'failed') audioSynth.playAlert();
+                  setBurnState(nextBurn);
+                }}
+                onProceedToSpace={() => {
+                  audioSynth.playSelect();
+                  setCurrentNasaSegment('space');
+                }}
+                onPrevSegment={() => {
+                  audioSynth.playSelect();
+                  setCurrentNasaSegment('setup');
+                }}
+              />
+            )}
+
+            {currentNasaSegment === 'space' && (
+              <SpaceSegment
+                selectedObjective={selectedObjective}
+                orbitState={orbitState}
+                onUpdateOrbitParams={handleUpdateOrbitParams}
+                onWarpToAnomaly={handleWarpToAnomaly}
+                selectedPropulsion={selectedPropulsion}
+                propellantBudgetKg={propellantBudgetKg}
+                onApplyManeuverBurn={handleApplyManeuverBurn}
+                instruments={nasaInstruments}
+                onToggleInstrument={handleToggleInstrument}
+                onShedHeavyPayloads={handleShedHeavyPayloads}
+                hasLineOfSight={groundComm.hasLineOfSight}
+                activeStationId={groundComm.activeStationId}
+                csaChallenges={csaChallenges}
+                opsState={opsState}
+                onUpdateOpsState={setOpsState}
+                onTriggerHazardDrill={handleTriggerHazardDrill}
+                onResolveCanadarmCapture={handleResolveCanadarmCapture}
+                landmarks={landmarks}
+                onFireInstrumentScan={handleFireInstrumentScan}
+                onProceedToGround={() => {
+                  audioSynth.playSelect();
+                  setCurrentNasaSegment('ground');
+                }}
+                onPrevSegment={() => {
+                  audioSynth.playSelect();
+                  setCurrentNasaSegment('launch');
+                }}
+              />
+            )}
+
+            {currentNasaSegment === 'ground' && (
+              <GroundSegment
+                selectedObjective={selectedObjective}
+                orbitState={orbitState}
+                groundComm={groundComm}
+                landmarks={landmarks}
+                onSteerDish={handleSteerDish}
+                onSelectStation={handleSelectStation}
+                onChangeBandMode={handleChangeBandMode}
+                onChangeBandwidthPct={handleChangeBandwidthPct}
+                onToggleServoAssist={handleToggleServoAssist}
+                onFlushSsrBurst={handleFlushSsrBurst}
+                onProceedToUser={() => {
+                  audioSynth.playSelect();
+                  setCurrentNasaSegment('user');
+                }}
+                onPrevSegment={() => {
+                  audioSynth.playSelect();
+                  setCurrentNasaSegment('space');
+                }}
+              />
+            )}
+
+            {currentNasaSegment === 'user' && (
+              <UserSegment
+                selectedObjective={selectedObjective}
+                orbitState={orbitState}
+                burnState={burnState}
+                groundComm={groundComm}
+                instruments={nasaInstruments}
+                scorecard={verificationScorecard}
+                discoveryCards={discoveryCards}
+                csaChallenges={csaChallenges}
+                opsState={opsState}
+                landmarks={landmarks}
+                groundTrackCoveragePct={groundTrackCoveragePct}
+                scannedTiles={scannedTiles}
+                telemetryHistory={telemetryHistory}
+                onResetMission={() => {
+                  audioSynth.playSelect();
+                  setCurrentNasaSegment('setup');
+                }}
+                onGoToConOps={() => {
+                  audioSynth.playSelect();
+                  setCurrentNasaSegment('conops');
+                }}
+                onPrevSegment={() => {
+                  audioSynth.playSelect();
+                  setCurrentNasaSegment('ground');
+                }}
+              />
+            )}
+
+            {currentNasaSegment === 'conops' && (
+              <ConOpsSegment
+                selectedObjective={selectedObjective}
+                orbitState={orbitState}
+                burnState={burnState}
+                groundComm={groundComm}
+                instruments={nasaInstruments}
+                scorecard={verificationScorecard}
+                csaChallenges={csaChallenges}
+                opsState={opsState}
+                landmarks={landmarks}
+                groundTrackCoveragePct={groundTrackCoveragePct}
+                onOpenDictionary={() => setShowDictionaryModal(true)}
+                onNavigateSegment={(seg) => {
+                  audioSynth.playSelect();
+                  setCurrentNasaSegment(seg);
+                }}
+              />
+            )}
+          </main>
+
+          <footer className="border-t border-slate-900 bg-[#060a14] px-4 py-2 font-mono-tab text-[11px] text-slate-400">
+            <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <span className="text-slate-500">Target Body:</span>
+                <strong className="text-white uppercase">{selectedObjective.targetBody}</strong>
+                <span className="text-slate-600">|</span>
+                <span className="text-slate-500">Altitude:</span>
+                <strong className="text-cyan-300">{orbitState.altitudeKm} km</strong>
+                <span className="text-slate-600">|</span>
+                <span className="text-slate-500">Tracking Link:</span>
+                <span className={groundComm.hasLineOfSight ? 'text-emerald-400 font-bold' : 'text-amber-400 font-bold'}>
+                  {groundComm.hasLineOfSight ? 'ONLINE (LOS)' : 'BLACKOUT (OCCLUDED)'}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className="text-slate-500">Rank:</span>
+                <strong className="text-amber-300">{verificationScorecard.missionRankBadge}</strong>
+                <span className="text-slate-600">|</span>
+                <span className="text-slate-500">SE Verification:</span>
+                <span
+                  className={`px-1.5 py-0.5 font-bold ${
+                    verificationScorecard.overallPass ? 'bg-emerald-500/20 text-emerald-300' : 'bg-amber-500/20 text-amber-300'
+                  }`}
+                >
+                  {verificationScorecard.flightCertificationGrade}
+                </span>
+              </div>
+            </div>
+          </footer>
+        </>
       )}
 
-      {phase === 'briefing' && (
-        <Phase1Briefing
-          config={config}
-          roomId={roomId}
-          selectedSoloRole={soloRole}
-          onSelectSoloRole={(r) => {
-            audioSynth.playSelect();
-            setSoloRole(r);
-          }}
-          onSelectDifficulty={handleChangeDifficulty}
-          onSelectObjective={handleSelectBriefingObjective}
-          onSelectConstraint={(constraintEventId) =>
-            handleUpdateConfig({ constraintEventId }, 'Changed flight weather')
-          }
-          onApplyArchetype={handleApplyArchetype}
-          onOpenTeamRoomModal={() => setShowTeamModal(true)}
-          onEnterAssemblyBay={() => {
-            audioSynth.playSelect();
-            setPhase('assembly');
-          }}
-        />
+      {/* VIEW 3: CLASSIC 3D TEAM HANGAR (1–4 Player Co-Op & Competitive Rooms) */}
+      {appView === 'classic-hangar' && (
+        <div className="relative h-screen w-screen overflow-hidden">
+          <SpacecraftScene
+            config={classicConfig}
+            sceneMode={
+              classicPhase === 'simulating'
+                ? 'orbit'
+                : classicPhase === 'planner'
+                  ? 'planner'
+                  : 'hangar'
+            }
+            explodeAmount={explodeAmount}
+            cameraPreset={cameraPreset}
+            cameraPresetNonce={cameraPresetNonce}
+            simProgress={classicSimProgress}
+            onSelectSubsystem={handleSelectSubsystem}
+          />
+
+          <PhaseHeader
+            phase={classicPhase}
+            config={classicConfig}
+            telemetry={classicTelemetry}
+            roomId={roomId}
+            memberCount={members.length || 1}
+            runCount={roomState?.runCount ?? soloRunCount}
+            muted={muted}
+            onNavigatePhase={(target) => {
+              audioSynth.playSelect();
+              if (target === 'title') {
+                setAppView('title');
+              } else {
+                setClassicPhase(target);
+              }
+            }}
+            onToggleMute={() => {
+              const next = !muted;
+              audioSynth.muted = next;
+              setMuted(next);
+            }}
+            onOpenDictionary={() => setShowDictionaryModal(true)}
+            onOpenTeamModal={() => setShowTeamModal(true)}
+            onOpenArchive={() => setShowArchiveModal(true)}
+            onLaunchMission={handleLaunchClassicSimulation}
+          />
+
+          {classicPhase === 'briefing' && (
+            <Phase1Briefing
+              config={classicConfig}
+              roomId={roomId}
+              selectedSoloRole={soloRole}
+              onSelectSoloRole={setSoloRole}
+              onSelectDifficulty={(d) => handleUpdateClassicConfig({ difficulty: d }, `Difficulty: ${d}`)}
+              onSelectObjective={(objectiveId) => {
+                const obj = OBJECTIVES.find((o) => o.id === objectiveId);
+                handleUpdateClassicConfig(
+                  { objectiveId, orbitId: obj?.recommendedOrbitId || classicConfig.orbitId },
+                  obj?.title || 'Mission Objective',
+                );
+              }}
+              onSelectConstraint={(constraintId) =>
+                handleUpdateClassicConfig({ constraintEventId: constraintId }, 'Mission Constraint')
+              }
+              onApplyArchetype={(arch: MissionArchetype) =>
+                handleUpdateClassicConfig(arch.patch, arch.name)
+              }
+              onOpenTeamRoomModal={() => setShowTeamModal(true)}
+              onEnterAssemblyBay={() => {
+                audioSynth.playSelect();
+                setClassicPhase('assembly');
+              }}
+            />
+          )}
+
+          {classicPhase === 'assembly' && (
+            <Phase2AssemblyBay
+              config={classicConfig}
+              telemetry={classicTelemetry}
+              activeCategory={activeCategory}
+              collapsed={dockCollapsed}
+              explodeAmount={explodeAmount}
+              cameraPreset={cameraPreset}
+              tradeOffPopup={tradeOffPopup}
+              roomId={roomId}
+              members={members}
+              messages={messages}
+              currentUid={user?.uid || null}
+              onChangeCategory={setActiveCategory}
+              onToggleCollapse={() => setDockCollapsed((c) => !c)}
+              onChangeExplode={setExplodeAmount}
+              onSelectCamera={(p) => {
+                setCameraPreset(p);
+                setCameraPresetNonce((n) => n + 1);
+              }}
+              onUpdateConfig={handleUpdateClassicConfig}
+              onDismissTradeOff={() => setTradeOffPopup(null)}
+              onChangeRole={(role) => {
+                setSoloRole(role);
+                if (roomId && user) {
+                  const me = members.find((m) => m.uid === user.uid);
+                  void updateMemberSeat(
+                    roomId,
+                    user.uid,
+                    user.displayName || 'Engineer',
+                    role,
+                    me?.ready || false,
+                  ).catch(() => {});
+                }
+              }}
+              onToggleReady={() => {
+                if (roomId && user) {
+                  const me = members.find((m) => m.uid === user.uid);
+                  void updateMemberSeat(
+                    roomId,
+                    user.uid,
+                    user.displayName || 'Engineer',
+                    me?.role || soloRole,
+                    !(me?.ready || false),
+                  ).catch(() => {});
+                }
+              }}
+              onSendMessage={(text) => {
+                if (roomId && user) {
+                  const me = members.find((m) => m.uid === user.uid);
+                  void sendRoomMessage(roomId, user, me?.role || soloRole, text, 'chat').catch(() => {});
+                }
+              }}
+              onOpenDictionary={() => setShowDictionaryModal(true)}
+              onOpenTeamModal={() => setShowTeamModal(true)}
+              onProceedToPlanner={() => {
+                audioSynth.playSelect();
+                setClassicPhase('planner');
+              }}
+            />
+          )}
+
+          {classicPhase === 'planner' && (
+            <Phase3LaunchPlanner
+              config={classicConfig}
+              telemetry={classicTelemetry}
+              onUpdateConfig={handleUpdateClassicConfig}
+              onBackToAssembly={() => setClassicPhase('assembly')}
+              onLaunchSimulation={handleLaunchClassicSimulation}
+            />
+          )}
+
+          {classicPhase === 'simulating' && (
+            <Phase4Simulation
+              config={classicConfig}
+              telemetry={classicTelemetry}
+              simProgress={classicSimProgress}
+              simSpeed={classicSimSpeed}
+              currentPhaseIndex={Math.min(3, Math.floor(classicSimProgress * 4))}
+              samples={simSamples}
+              activeAnomaly={activeAnomaly}
+              resolvedCount={resolvedAnomalyIds.length}
+              totalAnomalies={classicAnomalies.length}
+              onToggleSpeed={() => setClassicSimSpeed((s) => (s === 1 ? 2 : 1))}
+              onResolveAnomaly={(choice: AnomalyChoice) => {
+                if (!activeAnomaly) return;
+                audioSynth.playSelect();
+                setChosenActions((prev) => [
+                  ...prev,
+                  {
+                    scienceDelta: choice.scienceDelta,
+                    marginDelta: choice.marginDelta,
+                    collabDelta: choice.collabDelta,
+                    powerShiftW: choice.powerShiftW,
+                    dataShiftPct: choice.dataShiftPct,
+                  },
+                ]);
+                setResolvedAnomalyIds((prev) => [...prev, activeAnomaly.id]);
+                setActiveAnomaly(null);
+              }}
+              onAbortSimulation={() => setClassicPhase('planner')}
+            />
+          )}
+
+          {classicPhase === 'debrief' && outcome && (
+            <Phase5Debrief
+              config={classicConfig}
+              telemetry={classicTelemetry}
+              outcome={outcome}
+              runCount={roomState?.runCount ?? soloRunCount}
+              previousScore={previousScore}
+              user={user}
+              roomId={roomId}
+              roomTitle={roomState?.title || null}
+              savedId={savedMissionId}
+              saving={savingMission}
+              publishedId={publishedLeaderboardId}
+              publishing={publishingLeaderboard}
+              onSaveMission={() => {
+                if (!user) return;
+                setSavingMission(true);
+                void saveMissionRecord(
+                  user,
+                  classicConfig,
+                  classicTelemetry,
+                  outcome,
+                  roomId ? 'team' : 'solo',
+                  roomId || '',
+                )
+                  .then((id) => {
+                    setSavedMissionId(id);
+                    audioSynth.playSuccess();
+                  })
+                  .catch((err) => setToastError(err instanceof Error ? err.message : 'Unable to save mission.'))
+                  .finally(() => setSavingMission(false));
+              }}
+              onPublishLeaderboard={() => {
+                if (!user) return;
+                setPublishingLeaderboard(true);
+                void publishLeaderboardEntry(
+                  user,
+                  classicConfig,
+                  classicTelemetry,
+                  outcome,
+                  roomId ? 'team' : 'solo',
+                  roomState?.challengeMode || 'cooperative',
+                  roomState?.title || user.displayName || 'Flight Engineer',
+                )
+                  .then((id) => {
+                    setPublishedLeaderboardId(id);
+                    audioSynth.playSuccess();
+                  })
+                  .catch((err) => setToastError(err instanceof Error ? err.message : 'Unable to publish entry.'))
+                  .finally(() => setPublishingLeaderboard(false));
+              }}
+              onSignIn={() => void handleSignIn()}
+              onModifyInAssembly={() => {
+                setPreviousScore(outcome.totalScore);
+                const nextRun = (roomState?.runCount ?? soloRunCount) + 1;
+                setSoloRunCount(nextRun);
+                if (roomId) void iterateRoomDesign(roomId, nextRun).catch(() => {});
+                setClassicPhase('assembly');
+              }}
+              onModifyInPlanner={() => {
+                setPreviousScore(outcome.totalScore);
+                const nextRun = (roomState?.runCount ?? soloRunCount) + 1;
+                setSoloRunCount(nextRun);
+                if (roomId) void iterateRoomDesign(roomId, nextRun).catch(() => {});
+                setClassicPhase('planner');
+              }}
+            />
+          )}
+
+        </div>
       )}
 
-      {phase === 'assembly' && (
-        <Phase2AssemblyBay
-          config={config}
-          telemetry={telemetry}
-          activeCategory={activeCategory}
-          collapsed={dockCollapsed}
-          explodeAmount={explodeAmount}
-          cameraPreset={cameraPreset}
-          tradeOffPopup={tradeOffPopup}
-          roomId={roomId}
-          members={members}
-          messages={messages}
-          currentUid={user?.uid || null}
-          onChangeCategory={(cat) => {
-            audioSynth.playSelect();
-            setActiveCategory(cat);
-          }}
-          onToggleCollapse={() => setDockCollapsed((c) => !c)}
-          onChangeExplode={setExplodeAmount}
-          onSelectCamera={(preset) => {
-            audioSynth.playSelect();
-            setCameraPreset(preset);
-            setCameraPresetNonce((n) => n + 1);
-          }}
-          onUpdateConfig={handleUpdateConfig}
-          onDismissTradeOff={() => setTradeOffPopup(null)}
-          onChangeRole={(role) => void handleChangeRole(role)}
-          onToggleReady={() => void handleToggleReady()}
-          onSendMessage={(text) => void handleSendMessage(text)}
-          onOpenDictionary={() => setShowDictionaryModal(true)}
-          onOpenTeamModal={() => setShowTeamModal(true)}
-          onProceedToPlanner={() => {
-            audioSynth.playSelect();
-            setExplodeAmount(0);
-            setPhase('planner');
-          }}
-        />
-      )}
-
-      {phase === 'planner' && (
-        <Phase3LaunchPlanner
-          config={config}
-          telemetry={telemetry}
-          onUpdateConfig={handleUpdateConfig}
-          onBackToAssembly={() => {
-            audioSynth.playSelect();
-            setPhase('assembly');
-          }}
-          onLaunchSimulation={() => void handleStartSimulationClick()}
-        />
-      )}
-
-      {phase === 'simulating' && (
-        <Phase4Simulation
-          config={config}
-          telemetry={telemetry}
-          simProgress={simProgress}
-          simSpeed={simSpeed}
-          currentPhaseIndex={currentPhaseIndex}
-          samples={simSamples}
-          activeAnomaly={activeAnomaly}
-          resolvedCount={resolvedAnomalyIds.length}
-          totalAnomalies={anomalies.length}
-          onToggleSpeed={() => setSimSpeed((s) => (s === 1 ? 2 : 1))}
-          onResolveAnomaly={handleResolveAnomaly}
-          onAbortSimulation={() => setPhase('planner')}
-        />
-      )}
-
-      {phase === 'debrief' && outcome && (
-        <Phase5Debrief
-          config={config}
-          telemetry={telemetry}
-          outcome={outcome}
-          runCount={activeRunCount}
-          previousScore={previousScore}
-          user={user}
-          roomId={roomId}
-          roomTitle={roomState?.title || null}
-          savedId={savedMissionId}
-          saving={savingMission}
-          publishedId={publishedLeaderboardId}
-          publishing={publishingLeaderboard}
-          onSaveMission={() => void handleSaveMission()}
-          onPublishLeaderboard={() => void handlePublishLeaderboard()}
-          onSignIn={() => void handleSignIn()}
-          onModifyInAssembly={() => void handleIterateDesign('assembly')}
-          onModifyInPlanner={() => void handleIterateDesign('planner')}
-        />
-      )}
-
-      {/* Corner A.S.T.R.A. Friendly AI Mission Advisor */}
+      {/* GLOBAL NPC FLIGHT COMPANION (Follows player across Title, NASA Architect & Team Hangar) */}
       <AstraAdvisor
-        phase={phase}
-        config={config}
-        telemetry={telemetry}
+        appView={appView}
+        nasaSegment={currentNasaSegment}
+        architectMode={architectMode}
+        selectedObjective={selectedObjective}
+        selectedRocket={selectedRocket}
+        selectedPropulsion={selectedPropulsion}
+        propellantBudgetKg={propellantBudgetKg}
+        nasaInstruments={nasaInstruments}
+        burnState={burnState}
+        orbitState={orbitState}
+        groundComm={groundComm}
+        opsState={opsState}
+        landmarks={landmarks}
+        verificationScorecard={verificationScorecard}
+        classicPhase={classicPhase}
+        classicConfig={classicConfig}
+        classicTelemetry={classicTelemetry}
         activeAnomalyTitle={activeAnomaly?.title || null}
         onOpenDictionary={() => setShowDictionaryModal(true)}
       />
 
+      {/* SHARED MODALS */}
+      {showDictionaryModal && (
+        <MissionDictionaryModal onClose={() => setShowDictionaryModal(false)} />
+      )}
+
+      {showGuideModal && (
+        <MissionGuideModal
+          currentDifficulty={classicConfig.difficulty}
+          onSelectDifficulty={handleSelectDifficulty}
+          onClose={() => setShowGuideModal(false)}
+        />
+      )}
+
       {showTeamModal && (
         <TeamRoomModal
           user={user}
-          defaultObjectiveId={config.objectiveId}
+          defaultObjectiveId={classicConfig.objectiveId}
           onClose={() => setShowTeamModal(false)}
           onSignIn={handleSignIn}
           onCreateRoom={handleCreateRoom}
@@ -801,30 +2115,37 @@ export default function App() {
       {showArchiveModal && (
         <MissionArchiveModal
           user={user}
-          currentConfig={config}
-          onLoadConfig={handleLoadConfig}
+          currentConfig={classicConfig}
+          onLoadConfig={(loadedConfig, label) => {
+            setClassicConfig(loadedConfig);
+            setShowArchiveModal(false);
+            setAppView('classic-hangar');
+            setClassicPhase('assembly');
+            audioSynth.playMountPart();
+            setTradeOffPopup({
+              id: String(Date.now()),
+              title: `Loaded ${label}`,
+              summary: 'Imported mission architecture into the 3D assembly bay.',
+              deltas: [],
+            });
+          }}
           onClose={() => setShowArchiveModal(false)}
           onSignIn={() => void handleSignIn()}
         />
       )}
 
-      {showGuideModal && (
-        <MissionGuideModal
-          currentDifficulty={config.difficulty}
-          onSelectDifficulty={handleChangeDifficulty}
-          onClose={() => setShowGuideModal(false)}
-        />
-      )}
-
-      {showDictionaryModal && (
-        <MissionDictionaryModal onClose={() => setShowDictionaryModal(false)} />
-      )}
-
       {toastError && (
-        <div className="fixed top-14 right-4 z-50 max-w-sm border border-rose-500/60 bg-[#090d16] px-4 py-3 text-xs text-rose-200 shadow-xl">
-          {toastError}
+        <div className="fixed bottom-4 left-4 z-50 border border-rose-500/60 bg-rose-950/95 px-4 py-2.5 text-xs text-rose-100 shadow-2xl flex items-center gap-3">
+          <span>{toastError}</span>
+          <button
+            type="button"
+            onClick={() => setToastError(null)}
+            className="text-rose-300 hover:text-white font-bold cursor-pointer"
+          >
+            Dismiss
+          </button>
         </div>
       )}
-    </main>
+    </div>
   );
 }

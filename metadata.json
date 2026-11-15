@@ -2,5 +2,7 @@
   "name": "APOGEE — Space Mission Architect",
   "description": "Interactive 3D space mission design game and collaborative engineering simulator for solo players and teams of up to four.",
   "requestFramePermissions": [],
-  "majorCapabilities": []
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }

@@ -82,6 +82,72 @@ const DICTIONARY_TERMS: { term: string; category: string; definition: string }[]
     definition:
       'How many months the spacecraft can keep working before harsh space radiation wears out electronics or steering fuel runs dry.',
   },
+  {
+    term: 'Line-of-Sight (LOS)',
+    category: 'Signals',
+    definition:
+      'A straight, clear line between the spacecraft and a ground station antenna so radio signals can reach each other without being blocked.',
+  },
+  {
+    term: 'Communication Blackout',
+    category: 'Signals',
+    definition:
+      'When a planet or moon blocks the spacecraft from seeing Earth, temporarily cutting off radio signals until it orbits back around.',
+  },
+  {
+    term: 'Systems Engineering',
+    category: 'Design',
+    definition:
+      'NASA’s method of making sure all parts of a mission—the rocket, the orbiter, the ground antennas, and the science team—work together perfectly.',
+  },
+  {
+    term: 'Solid-State Recorder (SSR)',
+    category: 'Hardware',
+    definition:
+      'A super-rugged digital memory drive that saves camera pictures and science data during blackout until the spacecraft can beam them to Earth.',
+  },
+  {
+    term: 'Hohmann Transfer',
+    category: 'Astrodynamics',
+    definition:
+      'The most fuel-efficient 2-step oval highway in space used to move a spacecraft from a lower circular orbit to a higher one with just two engine burns.',
+  },
+  {
+    term: 'Porkchop Plot',
+    category: 'Trajectories',
+    definition:
+      'A colorful map shaped like a porkchop bone that shows rocket engineers the cheapest dates to launch toward other planets with the least amount of fuel.',
+  },
+  {
+    term: 'Characteristic Energy (C3)',
+    category: 'Physics',
+    definition:
+      'A measure of how much extra speed a rocket has after escaping Earth’s gravity so it can travel across deep space to other planets.',
+  },
+  {
+    term: 'Doppler Shift',
+    category: 'Signals',
+    definition:
+      'The pitch change in radio waves that tells mission control exactly how fast a spacecraft is speeding toward or away from Earth ground antennas.',
+  },
+  {
+    term: 'J2 Gravitational Perturbation',
+    category: 'Gravity',
+    definition:
+      'Because Earth bulges slightly around its equator, its uneven gravity gently twists and rotates satellite orbits over days and weeks.',
+  },
+  {
+    term: 'Canadarm3',
+    category: 'Robotics (CSA)',
+    definition:
+      'An AI-powered Canadian robotic arm built for NASA’s Lunar Gateway that inspects spacecraft, captures visiting supply ships, and moves science experiments.',
+  },
+  {
+    term: 'RADARSAT (SAR)',
+    category: 'Radar (CSA)',
+    definition:
+      'A Canadian microwave radar instrument that sees straight through clouds and polar darkness to track Arctic sea ice, glaciers, and floods.',
+  },
 ];
 
 export function MissionDictionaryModal({ onClose }: MissionDictionaryModalProps) {

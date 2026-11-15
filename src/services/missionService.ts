@@ -237,7 +237,9 @@ export async function createCollaborativeRoom(
 }
 
 export async function joinCollaborativeRoom(user: User, rawRoomId: string): Promise<RoomState> {
-  const roomId = sanitizeId(rawRoomId.toUpperCase(), 32);
+  const trimmed = rawRoomId.trim().toUpperCase();
+  const normalized = trimmed.startsWith('APG-') ? trimmed : `APG-${trimmed}`;
+  const roomId = sanitizeId(normalized, 32);
   const uid = sanitizeId(user.uid, 128);
   const roomRef = doc(db, 'rooms', roomId);
   const memberRef = doc(db, 'rooms', roomId, 'members', uid);

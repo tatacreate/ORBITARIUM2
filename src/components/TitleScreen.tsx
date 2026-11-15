@@ -127,14 +127,18 @@ export function TitleScreen({
           </div>
         </div>
 
-        <p className="mt-4 text-sm md:text-base leading-relaxed text-slate-300">
-          Design, build, launch, and fly your own spacecraft across 5 interactive mission phases. Balance real physics trade-offs in 3D solo or with a 4-person NASA-style flight team.
+        <div className="mt-3 text-[11px] font-mono-tab uppercase tracking-wider text-cyan-300">
+          NASA Systems Engineering · GMAT Astrodynamics · CSA Collaboration
+        </div>
+
+        <p className="mt-2.5 text-sm md:text-base leading-relaxed text-slate-300">
+          Architect orbital missions from scientific need to data return. Plan launch windows, fire impulsive Delta-v maneuvers, equip Canadarm3 &amp; RADARSAT payloads, and pass NASA flight verification—solo or in a 1–4 player team room.
         </p>
 
         {/* Difficulty Selector */}
         <div className="mt-5">
           <div className="text-[11px] font-mono-tab uppercase tracking-wider text-slate-400 mb-2">
-            Difficulty Mode
+            Mission Mode &amp; Difficulty
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
             {(['cadet', 'engineer', 'director', 'sandbox'] as DifficultyLevel[]).map((level) => {
@@ -167,7 +171,7 @@ export function TitleScreen({
             className="flex flex-1 items-center justify-center gap-2 bg-cyan-500 px-5 py-3 text-sm font-semibold text-slate-950 hover:bg-cyan-400 transition-colors whitespace-nowrap cursor-pointer"
           >
             <Rocket className="h-4 w-4" />
-            Solo Mission Design
+            Launch Mission Architect
           </button>
           <button
             type="button"
@@ -180,11 +184,11 @@ export function TitleScreen({
         </div>
 
         <div className="mt-5 pt-4 border-t border-slate-800/80 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs font-mono-tab text-slate-400">
-          <span>5 Planetary Targets</span>
+          <span>6 GMAT Orbital Regimes</span>
           <span aria-hidden="true">·</span>
-          <span>Guided Quick-Fixes</span>
+          <span>CSA Radar &amp; Canadarm3</span>
           <span aria-hidden="true">·</span>
-          <span>Live Flight Anomalies</span>
+          <span>Live DSN &amp; Inuvik Tracking</span>
         </div>
       </div>
 
