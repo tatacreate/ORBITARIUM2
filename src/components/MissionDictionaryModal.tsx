@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { BookOpen, Sparkles, X } from 'lucide-react';
+import { BookOpen, ExternalLink, Sparkles, X } from 'lucide-react';
+import { OFFICIAL_REFERENCES } from '../data/references';
 
 interface MissionDictionaryModalProps {
   onClose: () => void;
@@ -195,6 +196,28 @@ export function MissionDictionaryModal({ onClose }: MissionDictionaryModalProps)
                 <p className="mt-1.5 text-xs leading-relaxed text-slate-300">{item.definition}</p>
               </div>
             ))}
+          </div>
+
+          <div className="border border-slate-800 bg-slate-900/70 p-3.5 space-y-2">
+            <div className="text-[11px] font-mono-tab uppercase tracking-wider text-cyan-300">
+              Official NASA &amp; CSA Reference Sources
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              {OFFICIAL_REFERENCES.map((ref) => (
+                <a
+                  key={ref.id}
+                  href={ref.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center justify-between gap-2 border border-slate-700 bg-slate-950/75 px-3 py-2 text-xs text-slate-200 hover:border-cyan-400 hover:text-white transition-colors"
+                >
+                  <span className="truncate font-medium">
+                    {ref.agency}: {ref.title}
+                  </span>
+                  <ExternalLink className="h-3.5 w-3.5 text-cyan-400 shrink-0" />
+                </a>
+              ))}
+            </div>
           </div>
         </div>
 

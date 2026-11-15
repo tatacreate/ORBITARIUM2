@@ -2,6 +2,7 @@ import { AlertTriangle, ArrowLeft, CheckCircle2, Compass, Rocket, ShieldAlert, W
 import { LAUNCH_VEHICLES, ORBITS } from '../data/catalog';
 import { getCatalogParts } from '../engine/physics';
 import type { LaunchVehicleSpec, MissionConfig, OrbitSpec, TelemetryReport } from '../types/mission';
+import { ResourceFlowMap } from './ResourceFlowMap';
 
 interface Phase3LaunchPlannerProps {
   config: MissionConfig;
@@ -119,19 +120,25 @@ export function Phase3LaunchPlanner({
             </button>
             <button
               type="button"
-              disabled={!telemetry.launchReady}
               onClick={onLaunchSimulation}
-              className={`flex items-center gap-2 px-5 py-2.5 text-xs font-bold transition-colors ${
+              className={`flex items-center gap-2 px-5 py-2.5 text-xs font-bold transition-colors cursor-pointer ${
                 telemetry.launchReady
-                  ? 'bg-emerald-500 text-slate-950 hover:bg-emerald-400 cursor-pointer'
-                  : 'border border-rose-500/60 bg-rose-950/60 text-rose-300 cursor-not-allowed'
+                  ? 'bg-emerald-500 text-slate-950 hover:bg-emerald-400'
+                  : 'border border-amber-400/80 bg-amber-950/60 text-amber-200 hover:bg-amber-900/60'
               }`}
             >
               <Rocket className="h-4 w-4" />
-              <span>{telemetry.launchReady ? 'Launch Mission Simulation →' : 'Resolve Check Below'}</span>
+              <span>
+                {telemetry.launchReady
+                  ? 'Launch Mission Simulation →'
+                  : 'Test Launch Anyway (Expect Failure) →'}
+              </span>
             </button>
           </div>
         </div>
+
+        {/* Connected 6-Resource Mission Chain */}
+        <ResourceFlowMap config={config} telemetry={telemetry} />
 
         {/* Main 2-Column Planner */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
@@ -276,7 +283,7 @@ export function Phase3LaunchPlanner({
                 <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-xs text-rose-200">
                   <span className="flex items-center gap-1.5">
                     <AlertTriangle className="h-3.5 w-3.5 text-amber-400 shrink-0" />
-                    {telemetry.advisories[0].plainTerms}
+                    {telemetry.advisories[0].plainTerms} (Or click Test Launch above to see the failure unfold in flight!)
                   </span>
                   {telemetry.advisories[0].quickFix && parts.difficulty.showQuickFixes && (
                     <button

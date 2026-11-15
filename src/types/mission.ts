@@ -53,6 +53,8 @@ export interface MissionObjective {
   minLifetimeMonths: number;
   preferredInstruments: string[];
   radiationSeverity: number;
+  criticalResources: string[];
+  alternativeStrategies: string;
   summary: string;
   storyHook: string;
   constraintsNote: string;
@@ -297,8 +299,13 @@ export interface TradeOffPopup {
 export interface AnomalyChoice {
   id: string;
   label: string;
+  riskNote: string;
   detail: string;
   whyItMatters?: string;
+  isHazardous?: boolean;
+  requiresHardwareLabel?: string;
+  hardwareMet?: boolean;
+  hullDamage?: number;
   scienceDelta: number;
   marginDelta: number;
   collabDelta: number;
@@ -314,6 +321,15 @@ export interface FlightAnomaly {
   title: string;
   description: string;
   choices: AnomalyChoice[];
+}
+
+export interface LiveFlightReport {
+  hullIntegrityPct: number;
+  batteryDropouts: number;
+  dataOverflows: number;
+  wrongChoicesCount: number;
+  flushedGB: number;
+  lastEventSummary: string | null;
 }
 
 export interface CriterionCheck {
@@ -336,6 +352,8 @@ export interface SimulationOutcome {
   failureSummary: string | null;
   criteriaChecks: CriterionCheck[];
   lessons: string[];
+  hullRemainingPct?: number;
+  wrongChoicesCount?: number;
 }
 
 export interface RoomState {

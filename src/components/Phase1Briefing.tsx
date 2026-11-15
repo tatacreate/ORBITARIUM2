@@ -6,6 +6,7 @@ import {
   Radio,
   Rocket,
   Shield,
+  Shuffle,
   Sparkles,
   User,
   Users,
@@ -22,6 +23,7 @@ import type {
   EngineeringRole,
   MissionArchetype,
   MissionConfig,
+  SpacecraftModelMode,
 } from '../types/mission';
 
 interface Phase1BriefingProps {
@@ -30,6 +32,7 @@ interface Phase1BriefingProps {
   selectedSoloRole: EngineeringRole;
   onSelectSoloRole: (role: EngineeringRole) => void;
   onSelectDifficulty: (d: DifficultyLevel) => void;
+  onSelectModelMode: (mode: SpacecraftModelMode) => void;
   onSelectObjective: (objectiveId: string) => void;
   onSelectConstraint: (constraintId: string) => void;
   onApplyArchetype: (arch: MissionArchetype) => void;
@@ -43,6 +46,7 @@ export function Phase1Briefing({
   selectedSoloRole,
   onSelectSoloRole,
   onSelectDifficulty,
+  onSelectModelMode,
   onSelectObjective,
   onSelectConstraint,
   onApplyArchetype,
@@ -225,6 +229,46 @@ export function Phase1Briefing({
                 );
               })}
             </div>
+            <div className="pt-2 border-t border-slate-800/80 space-y-2">
+              <div className="text-[11px] font-mono-tab uppercase tracking-wider text-slate-300">
+                Spacecraft Model Detail
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                {(
+                  [
+                    {
+                      id: 'simplified' as SpacecraftModelMode,
+                      title: 'Simplified Model',
+                      desc: 'Core bus, power, comms & shield choices.',
+                    },
+                    {
+                      id: 'realistic' as SpacecraftModelMode,
+                      title: 'Realistic Model',
+                      desc: 'Adds batteries, flight computer memory & star aiming.',
+                    },
+                  ]
+                ).map((modeOpt) => {
+                  const active = (config.modelMode ?? 'realistic') === modeOpt.id;
+                  return (
+                    <button
+                      key={modeOpt.id}
+                      type="button"
+                      onClick={() => onSelectModelMode(modeOpt.id)}
+                      className={`text-left border p-2.5 transition-colors cursor-pointer ${
+                        active
+                          ? 'border-cyan-400 bg-cyan-950/40'
+                          : 'border-slate-800 bg-slate-900/60 hover:border-slate-600'
+                      }`}
+                    >
+                      <div className="text-xs font-bold text-white">{modeOpt.title}</div>
+                      <div className="mt-0.5 text-[10px] text-slate-400 leading-snug">
+                        {modeOpt.desc}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
           </div>
         </div>
 
@@ -236,11 +280,11 @@ export function Phase1Briefing({
                 3. Select Your Mission Scenario
               </div>
               <p className="mt-0.5 text-xs text-slate-400">
-                Each world brings unique sunlight levels, radio distances, radiation, and target science goals.
+                Each world imposes distinct critical resource bottlenecks—there is never just one winning design.
               </p>
             </div>
-            <div className="flex items-center gap-2 text-xs">
-              <span className="text-slate-400">Mission Weather:</span>
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="text-slate-400">Mission Constraint:</span>
               <select
                 value={config.constraintEventId || 'none'}
                 onChange={(e) => onSelectConstraint(e.target.value)}
@@ -252,6 +296,19 @@ export function Phase1Briefing({
                   </option>
                 ))}
               </select>
+              <button
+                type="button"
+                onClick={() => {
+                  const pool = RANDOM_CONSTRAINTS.filter((c) => c.id !== 'none');
+                  const pick = pool[Math.floor(Math.random() * pool.length)];
+                  if (pick) onSelectConstraint(pick.id);
+                }}
+                className="inline-flex items-center gap-1 border border-slate-700 bg-slate-900 px-2.5 py-1.5 text-xs font-medium text-amber-300 hover:border-amber-400 cursor-pointer whitespace-nowrap"
+                title="Roll an unexpected mission constraint event"
+              >
+                <Shuffle className="h-3.5 w-3.5" />
+                Surprise Event
+              </button>
             </div>
           </div>
 
@@ -281,6 +338,9 @@ export function Phase1Briefing({
                     <h3 className="mt-1.5 font-display text-base font-bold text-white">
                       {obj.title}
                     </h3>
+                    <div className="mt-1 font-mono-tab text-[10px] text-amber-300/95">
+                      Critical: {obj.criticalResources.join(' · ')}
+                    </div>
                     <p className="mt-1.5 text-xs leading-relaxed text-cyan-100/90">
                       {obj.storyHook}
                     </p>

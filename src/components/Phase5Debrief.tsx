@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   Copy,
   Download,
+  ExternalLink,
   LogIn,
   RotateCcw,
   Save,
@@ -13,6 +14,7 @@ import {
   Trophy,
   XCircle,
 } from 'lucide-react';
+import { OFFICIAL_REFERENCES } from '../data/references';
 import { getCatalogParts } from '../engine/physics';
 import type { MissionConfig, SimulationOutcome, TelemetryReport } from '../types/mission';
 import { buildMissionReportText, encodeDesignCode } from '../utils/designShare';
@@ -153,6 +155,25 @@ export function Phase5Debrief({
                   </span>
                 )}
                 <span>· {parts.difficulty.label}</span>
+                {outcome.hullRemainingPct !== undefined && (
+                  <span
+                    className={
+                      outcome.hullRemainingPct >= 65
+                        ? 'text-emerald-300'
+                        : outcome.hullRemainingPct > 0
+                        ? 'text-amber-300'
+                        : 'text-rose-400 font-bold'
+                    }
+                  >
+                    · Hull: {outcome.hullRemainingPct}%
+                  </span>
+                )}
+                {outcome.wrongChoicesCount !== undefined && outcome.wrongChoicesCount > 0 && (
+                  <span className="text-rose-300">
+                    · {outcome.wrongChoicesCount} Critical Flight Error
+                    {outcome.wrongChoicesCount > 1 ? 's' : ''}
+                  </span>
+                )}
               </div>
             </div>
           </div>
@@ -311,6 +332,34 @@ export function Phase5Debrief({
           </div>
         </div>
 
+        {/* Engineering Lessons & Multiple Valid Solutions Insight */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="border border-slate-800 bg-[#080d19] p-4 space-y-2">
+            <div className="text-xs font-mono-tab uppercase tracking-wider text-cyan-400">
+              How Your Design Choices Shaped This Run
+            </div>
+            <ul className="space-y-1.5 text-xs text-slate-300 list-disc pl-4">
+              {outcome.lessons.map((lesson) => (
+                <li key={lesson} className="leading-relaxed">
+                  {lesson}
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          <div className="border border-slate-800 bg-[#080d19] p-4 space-y-2">
+            <div className="text-xs font-mono-tab uppercase tracking-wider text-amber-300">
+              Multiple Valid Architectures for {parts.objective.targetBody.toUpperCase()}
+            </div>
+            <p className="text-xs leading-relaxed text-slate-300">
+              {parts.objective.alternativeStrategies}
+            </p>
+            <p className="text-[11px] text-slate-400">
+              Try clicking <strong className="text-cyan-300">Modify &amp; Re-Simulate</strong> to test a completely different engine, power, or orbit combination and compare your score!
+            </p>
+          </div>
+        </div>
+
         {/* Bottom Actions: Share Code, Download Report, Save to Log & Leaderboard */}
         <div className="border border-slate-800 bg-[#080d19] p-4 flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-2">
@@ -368,6 +417,37 @@ export function Phase5Debrief({
                 Sign in with Google to Save &amp; Rank
               </button>
             )}
+          </div>
+        </div>
+
+        {/* Official NASA & CSA Reference Links */}
+        <div className="border border-slate-800 bg-[#080d19] p-4 space-y-2.5">
+          <div className="text-[11px] font-mono-tab uppercase tracking-wider text-cyan-400">
+            Official NASA &amp; Canadian Space Agency Resources
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
+            {OFFICIAL_REFERENCES.map((ref) => (
+              <a
+                key={ref.id}
+                href={ref.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="group flex items-start justify-between gap-2 border border-slate-800 bg-slate-900/60 p-3 hover:border-cyan-400/70 transition-colors"
+              >
+                <div>
+                  <div className="text-[10px] font-mono-tab uppercase text-amber-300">
+                    {ref.agency}
+                  </div>
+                  <div className="mt-0.5 text-xs font-bold text-white group-hover:text-cyan-300">
+                    {ref.title}
+                  </div>
+                  <div className="mt-1 text-[11px] text-slate-400 leading-snug">
+                    {ref.subtitle}
+                  </div>
+                </div>
+                <ExternalLink className="h-3.5 w-3.5 text-slate-500 group-hover:text-cyan-300 shrink-0 mt-0.5" />
+              </a>
+            ))}
           </div>
         </div>
       </div>

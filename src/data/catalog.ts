@@ -231,6 +231,9 @@ export const OBJECTIVES: MissionObjective[] = [
     minLifetimeMonths: 24,
     preferredInstruments: ['sar-radar', 'gamma-neutron', 'multispec-cam'],
     radiationSeverity: 1.5,
+    criticalResources: ['Eclipse Power & Battery', 'Capture Δv & Mass'],
+    alternativeStrategies:
+      'Low Lunar Polar Orbit maximizes crater resolution with Bipropellant thrust, while Lunar Elliptical Frozen Orbit saves 0.4 km/s Δv and cuts eclipse shadow time in half.',
     storyHook: 'NASA needs an orbital ice map before Artemis astronauts land near Shackleton Crater.',
     summary:
       'Map permanently shadowed polar craters for buried water-ice deposits to support future lunar bases.',
@@ -248,6 +251,9 @@ export const OBJECTIVES: MissionObjective[] = [
     minLifetimeMonths: 36,
     preferredInstruments: ['ir-sounder', 'sar-radar', 'mass-spec'],
     radiationSeverity: 2.0,
+    criticalResources: ['Downlink across 1.55 AU', '43% Sunlight Margin'],
+    alternativeStrategies:
+      'Pair Deployable Wings + Xenon Ion Drive for a lighter Meridian-9 launch in Elliptical Relay, or use Centaur-H + Bipropellant for a tight Polar Science orbit.',
     storyHook: 'Surface rovers are waiting for a high-bandwidth orbital relay and dust-storm weather scout!',
     summary:
       'Relay rover telemetry back to Earth while mapping Martian dust storms, thin atmosphere, and buried polar ice.',
@@ -265,6 +271,9 @@ export const OBJECTIVES: MissionObjective[] = [
     minLifetimeMonths: 36,
     preferredInstruments: ['mag-boom', 'gamma-neutron', 'multispec-cam'],
     radiationSeverity: 1.7,
+    criticalResources: ['Cruise Δv (2.4 km/s)', 'Precision Star Aiming'],
+    alternativeStrategies:
+      'Solar-Electric Ion Drive slashes propellant mass by 60% using oversized solar wings, while Bipropellant + Heavy Rocket simplifies power at higher launch cost.',
     storyHook: 'Track an iron-rich asteroid’s spin, mass, and interior density before a kinetic deflection test.',
     summary:
       'Rendezvous with a metallic near-Earth / main-belt asteroid to map its gravity field, composition, and surface craters.',
@@ -282,6 +291,9 @@ export const OBJECTIVES: MissionObjective[] = [
     minLifetimeMonths: 36,
     preferredInstruments: ['mass-spec', 'mag-boom', 'multispec-cam'],
     radiationSeverity: 4.5,
+    criticalResources: ['Extreme Radiation Armor', '3.7% Sunlight Power'],
+    alternativeStrategies:
+      'Jovian Resonance Flyby lets Aerogel Armor survive on a Heavy Rocket, whereas Europa Low Science Orbit demands a Titanium Vault + Super-Heavy Titan-SH launcher.',
     storyHook: 'Fly through icy water plumes erupting above Europa’s hidden alien ocean!',
     summary:
       'Sample active cryovolcanic plumes and measure magnetic fields inside Jupiter’s intense radiation belts.',
@@ -299,6 +311,9 @@ export const OBJECTIVES: MissionObjective[] = [
     minLifetimeMonths: 48,
     preferredInstruments: ['multispec-cam', 'ir-sounder', 'sar-radar'],
     radiationSeverity: 1.0,
+    criticalResources: ['Tight $265M Budget', 'High Daily Data Volume'],
+    alternativeStrategies:
+      'A nimble CubeSat on a Vector-L Light Rocket beats the budget cap easily, while a Medium Explorer in Geostationary Orbit trades higher rocket cost for 24/7 storm coverage.',
     storyHook: 'Monitor hurricanes, melting glaciers, and wildfire smoke plumes across Earth in real time.',
     summary:
       'Deliver continuous daily global ocean, heat, and methane measurements from Earth orbit.',

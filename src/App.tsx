@@ -1,13 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { onAuthStateChanged, type User } from 'firebase/auth';
-import {
-  ArrowLeft,
-  BookOpen,
-  Orbit,
-  RotateCcw,
-  Volume2,
-  VolumeX,
-} from 'lucide-react';
+import { BookOpen, Home, Rocket, RotateCcw } from 'lucide-react';
 import { audioSynth } from './audio/synth';
 import { AstraAdvisor } from './components/AstraAdvisor';
 import { MissionArchiveModal } from './components/MissionArchiveModal';
@@ -16,14 +9,12 @@ import { MissionGuideModal } from './components/MissionGuideModal';
 import { Phase1Briefing } from './components/Phase1Briefing';
 import { Phase2AssemblyBay } from './components/Phase2AssemblyBay';
 import { Phase3LaunchPlanner } from './components/Phase3LaunchPlanner';
-import { Phase4Simulation, type SimTelemetrySample } from './components/Phase4Simulation';
+import { Phase4Simulation, type SimPowerMode, type SimTelemetrySample } from './components/Phase4Simulation';
 import { Phase5Debrief } from './components/Phase5Debrief';
 import { PhaseHeader } from './components/PhaseHeader';
 import { TeamRoomModal } from './components/TeamRoomModal';
 import { TitleScreen } from './components/TitleScreen';
-
 import { UnifiedMissionCanvas, type UnifiedGameSnapshot } from './game/UnifiedMissionCanvas';
-import { UNIFIED_MISSIONS } from './game/missions';
 
 import { DEFAULT_MISSION_CONFIG, OBJECTIVES } from './data/catalog';
 import {
@@ -49,6 +40,7 @@ import {
   computeTelemetry,
   evaluateSimulationOutcome,
   generateFlightAnomalies,
+  getCatalogParts,
 } from './engine/physics';
 import { auth } from './firebase';
 import {
@@ -258,18 +250,10 @@ export default function App() {
   const [isSimPaused, setIsSimPaused] = useState(false);
   const [simSpeedMult, setSimSpeedMult] = useState<number>(1);
   const [missionElapsedSec, setMissionElapsedSec] = useState<number>(142500);
-  const [unifiedSnapshot, setUnifiedSnapshot] = useState<UnifiedGameSnapshot>({
-    missionId: 'earth-climate',
-    phase: 'briefing',
-    fuelPct: 100,
-    hullPct: 100,
-    orbsCollected: 0,
-    orbsBeamed: 0,
-    orbGoal: 3,
-    activeThreat: 'none',
-    starsEarned: 3,
-  });
-  const [briefingRequest, setBriefingRequest] = useState<{ phase: 'briefing'; nonce: number } | null>(null);
+
+  // Continuous HTML5 Canvas Flight Simulator Snapshot & Reset Request
+  const [unifiedSnapshot, setUnifiedSnapshot] = useState<UnifiedGameSnapshot | null>(null);
+  const [unifiedPhaseReq, setUnifiedPhaseReq] = useState<{ phase: 'briefing'; nonce: number } | null>(null);
 
   // Modals & UI Controls
   const [muted, setMuted] = useState(false);
@@ -310,6 +294,16 @@ export default function App() {
     { scienceDelta: number; marginDelta: number; collabDelta: number; powerShiftW?: number; dataShiftPct?: number }[]
   >([]);
   const [simSamples, setSimSamples] = useState<SimTelemetrySample[]>([]);
+  const [simHullPct, setSimHullPct] = useState(100);
+  const [simBatteryPct, setSimBatteryPct] = useState(88);
+  const [simBufferUsedGB, setSimBufferUsedGB] = useState(4);
+  const [simPowerMode, setSimPowerMode] = useState<SimPowerMode>('full');
+  const [simCompressionOn, setSimCompressionOn] = useState(false);
+  const [simBatteryDropouts, setSimBatteryDropouts] = useState(0);
+  const [simDataOverflows, setSimDataOverflows] = useState(0);
+  const [simWrongChoices, setSimWrongChoices] = useState(0);
+  const [simFlushedGB, setSimFlushedGB] = useState(0);
+  const [simLastEvent, setSimLastEvent] = useState<string | null>(null);
   const [outcome, setOutcome] = useState<SimulationOutcome | null>(null);
   const [savedMissionId, setSavedMissionId] = useState<string | null>(null);
   const [savingMission, setSavingMission] = useState(false);
@@ -317,7 +311,33 @@ export default function App() {
   const [publishingLeaderboard, setPublishingLeaderboard] = useState(false);
 
   const classicTelemetry = useMemo(() => computeTelemetry(classicConfig), [classicConfig]);
+  const classicParts = useMemo(() => getCatalogParts(classicConfig), [classicConfig]);
   const tradeOffTimerRef = useRef<number | null>(null);
+
+  const liveOpsRef = useRef({
+    hullPct: 100,
+    batteryPct: 88,
+    bufferUsedGB: 4,
+    powerMode: 'full' as SimPowerMode,
+    compressionOn: false,
+    batteryDropouts: 0,
+    dataOverflows: 0,
+    wrongChoices: 0,
+    flushedGB: 0,
+    lastEvent: null as string | null,
+  });
+  liveOpsRef.current = {
+    hullPct: simHullPct,
+    batteryPct: simBatteryPct,
+    bufferUsedGB: simBufferUsedGB,
+    powerMode: simPowerMode,
+    compressionOn: simCompressionOn,
+    batteryDropouts: simBatteryDropouts,
+    dataOverflows: simDataOverflows,
+    wrongChoices: simWrongChoices,
+    flushedGB: simFlushedGB,
+    lastEvent: simLastEvent,
+  };
 
   // Auth Listener
   useEffect(() => {
@@ -343,8 +363,8 @@ export default function App() {
         !showDictionaryModal
       ) {
         audioSynth.playSelect();
-        setAppView('nasa-architect');
-        setCurrentNasaSegment('setup');
+        setAppView('classic-hangar');
+        setClassicPhase('briefing');
       }
     };
     window.addEventListener('keydown', onKeyDown);
@@ -389,36 +409,28 @@ export default function App() {
     return () => unsub();
   }, [authReady, user, roomId]);
 
-  // Classic Simulation Loop (when team room or classic hangar enters simulating phase)
+  // Classic Simulation Loop (Solo & 1-4 Player Co-Op/Competitive Live Flight Operations)
   useEffect(() => {
     if (appView !== 'classic-hangar' || classicPhase !== 'simulating' || activeAnomaly) return;
 
+    const isSandbox = classicConfig.difficulty === 'sandbox';
+    const earlyStopProgress = isSandbox
+      ? 1
+      : classicTelemetry.massStatus === 'Critical' || classicTelemetry.budgetStatus === 'Critical'
+        ? 0.18
+        : classicTelemetry.deltaVStatus === 'Critical'
+          ? 0.42
+          : classicTelemetry.powerStatus === 'Critical'
+            ? 0.55
+            : 1;
+
     const timer = window.setInterval(() => {
       setClassicSimProgress((prev) => {
-        const next = Math.min(1, prev + 0.015 * classicSimSpeed);
+        const next = Math.min(earlyStopProgress, prev + 0.013 * classicSimSpeed);
+        const ops = liveOpsRef.current;
 
-        const nextAnomaly = classicAnomalies.find(
-          (a) => next >= a.triggerProgress && !resolvedAnomalyIds.includes(a.id),
-        );
-        if (nextAnomaly) {
-          audioSynth.playAlert();
-          setActiveAnomaly(nextAnomaly);
-          return next;
-        }
-
-        const powerShift = chosenActions.reduce((s, c) => s + (c.powerShiftW || 0), 0);
-        const dataShift = chosenActions.reduce((s, c) => s + (c.dataShiftPct || 0), 0);
-        setSimSamples((old) => [
-          ...old.slice(-30),
-          {
-            progress: next,
-            powerPct: Math.max(0, Math.min(100, 75 + (classicTelemetry.powerMarginW + powerShift) * 0.08)),
-            dataPct: Math.max(0, Math.min(100, 68 + classicTelemetry.linkMarginDb * 2 + dataShift)),
-            sciencePct: Math.round(next * 100),
-          },
-        ]);
-
-        if (next >= 1) {
+        // Abort early if spacecraft lost in flight due to Hull Collapse or multiple wrong commands
+        if (!isSandbox && (ops.hullPct <= 0 || ops.wrongChoices >= 2)) {
           clearInterval(timer);
           const allReady = members.length <= 1 || members.every((m) => m.ready);
           const result = evaluateSimulationOutcome(
@@ -427,6 +439,111 @@ export default function App() {
             chosenActions,
             members.length || 1,
             allReady,
+            {
+              hullIntegrityPct: ops.hullPct,
+              batteryDropouts: ops.batteryDropouts,
+              dataOverflows: ops.dataOverflows,
+              wrongChoicesCount: ops.wrongChoices,
+              flushedGB: ops.flushedGB,
+              lastEventSummary: ops.lastEvent,
+            },
+          );
+          setOutcome(result);
+          audioSynth.playAlert();
+          if (roomId) {
+            void completeRoomSimulation(roomId, result.totalScore, result.grade).catch(() => {});
+          }
+          setClassicPhase('debrief');
+          return next;
+        }
+
+        if (next < earlyStopProgress) {
+          const nextAnomaly = classicAnomalies.find(
+            (a) => next >= a.triggerProgress && !resolvedAnomalyIds.includes(a.id),
+          );
+          if (nextAnomaly) {
+            audioSynth.playAlert();
+            setActiveAnomaly(nextAnomaly);
+            return next;
+          }
+        }
+
+        // Orbital eclipse & Earth ground-station pass cycles
+        const inEclipse = ((next * 5) % 1) >= 1 - Math.max(0.14, classicParts.orbit.eclipseFraction);
+        const earthPassOpen = ((next * 4.5 + 0.28) % 1) < 0.45;
+        const bufferCapGB = classicParts.avionics.dataBufferGB;
+
+        // Live Battery physics
+        const batteryCapHelp = classicParts.battery.capacityWh >= 300 ? 1.15 : 0;
+        const modeDrain =
+          ops.powerMode === 'full' ? 2.6 : ops.powerMode === 'balanced' ? 0.95 : 0.15;
+        let nextBatt = ops.batteryPct;
+        if (classicParts.power.kind === 'nuclear') {
+          nextBatt = Math.min(
+            100,
+            Math.max(15, ops.batteryPct + (ops.powerMode === 'full' && classicTelemetry.powerMarginW < 0 ? -0.9 : 0.8)),
+          );
+        } else if (inEclipse) {
+          nextBatt = Math.max(0, ops.batteryPct - Math.max(0.1, modeDrain - batteryCapHelp));
+        } else {
+          const chargeBoost = ops.powerMode === 'safe' ? 2.8 : ops.powerMode === 'balanced' ? 1.8 : 0.9;
+          const powerSlope = classicTelemetry.powerMarginW < 0 ? -1.4 : chargeBoost;
+          nextBatt = Math.max(0, Math.min(100, ops.batteryPct + powerSlope));
+        }
+
+        if (nextBatt <= 2 && !isSandbox) {
+          audioSynth.playAlert();
+          nextBatt = 42;
+          setSimPowerMode('safe');
+          setSimBatteryDropouts((d) => d + 1);
+          setSimHullPct((h) => Math.max(0, h - 14));
+          setSimLastEvent('Battery hit 0% in shadow! Auto-tripped Safe Mode (-14% Hull).');
+        }
+        setSimBatteryPct(nextBatt);
+
+        // Live Onboard Memory Buffer & Earth Downlink
+        const scienceFillMult = ops.powerMode === 'full' ? 1.0 : ops.powerMode === 'balanced' ? 0.6 : 0.18;
+        const compressionMult = ops.compressionOn ? 0.65 : 1.0;
+        const dataInGB = (classicTelemetry.dataGeneratedGBDay / 28) * scienceFillMult * compressionMult;
+        const dataOutGB = earthPassOpen ? classicTelemetry.downlinkCapacityGBDay / 24 : 0;
+        let nextBuf = Math.max(0, ops.bufferUsedGB + dataInGB - dataOutGB);
+        if (nextBuf >= bufferCapGB) {
+          if (!isSandbox) {
+            audioSynth.playAlert();
+            setSimDataOverflows((o) => o + 1);
+            setSimLastEvent('Memory overflowed! Flush during Earth passes or enable compression.');
+          }
+          nextBuf = bufferCapGB * 0.72;
+        }
+        setSimBufferUsedGB(nextBuf);
+
+        setSimSamples((old) => [
+          ...old.slice(-30),
+          {
+            progress: next,
+            powerPct: Math.round(nextBatt),
+            dataPct: Math.min(100, Math.round((nextBuf / Math.max(1, bufferCapGB)) * 100)),
+            sciencePct: Math.round(next * 100),
+          },
+        ]);
+
+        if (next >= earlyStopProgress) {
+          clearInterval(timer);
+          const allReady = members.length <= 1 || members.every((m) => m.ready);
+          const result = evaluateSimulationOutcome(
+            classicConfig,
+            classicTelemetry,
+            chosenActions,
+            members.length || 1,
+            allReady,
+            {
+              hullIntegrityPct: ops.hullPct,
+              batteryDropouts: ops.batteryDropouts,
+              dataOverflows: ops.dataOverflows,
+              wrongChoicesCount: ops.wrongChoices,
+              flushedGB: ops.flushedGB,
+              lastEventSummary: ops.lastEvent,
+            },
           );
           setOutcome(result);
           if (result.missionSuccess) audioSynth.playSuccess();
@@ -450,6 +567,7 @@ export default function App() {
     resolvedAnomalyIds,
     chosenActions,
     classicTelemetry,
+    classicParts,
     classicConfig,
     members,
     roomId,
@@ -547,6 +665,16 @@ export default function App() {
     setClassicSimSeed(seed);
     setClassicSimProgress(0);
     setSimSamples([]);
+    setSimHullPct(100);
+    setSimBatteryPct(88);
+    setSimBufferUsedGB(4);
+    setSimPowerMode('full');
+    setSimCompressionOn(false);
+    setSimBatteryDropouts(0);
+    setSimDataOverflows(0);
+    setSimWrongChoices(0);
+    setSimFlushedGB(0);
+    setSimLastEvent('All systems nominal — manage Power Bus Mode & Memory Flushes live!');
     setChosenActions([]);
     setResolvedAnomalyIds([]);
     setActiveAnomaly(null);
@@ -1412,10 +1540,14 @@ export default function App() {
             onSelectDifficulty={handleSelectDifficulty}
             onSignIn={() => void handleSignIn()}
             onSignOut={() => void handleSignOut()}
-            onStartSolo={() => {
+            onStartFlightSim={() => {
               audioSynth.playSelect();
               setAppView('nasa-architect');
-              setCurrentNasaSegment('setup');
+            }}
+            onStartSolo={() => {
+              audioSynth.playSelect();
+              setAppView('classic-hangar');
+              setClassicPhase('briefing');
             }}
             onOpenTeamModal={() => {
               audioSynth.playSelect();
@@ -1433,122 +1565,75 @@ export default function App() {
         </div>
       )}
 
-      {/* VIEW 2: UNIFIED FULL-SCREEN 60FPS SPACE MISSION GAME */}
+      {/* VIEW 1B: CONTINUOUS HTML5 CANVAS FLIGHT SIMULATOR (Launch -> Space -> Ground -> User) */}
       {appView === 'nasa-architect' && (
-        <div className="flex h-screen w-screen flex-col overflow-hidden bg-[#020617]">
-          <header className="z-40 shrink-0 border-b border-slate-800/90 bg-[#060a14]/95 px-4 py-2">
-            <div className="flex items-center justify-between gap-4">
-              {/* Left: Back to Homepage + Brand */}
-              <div className="flex items-center gap-3 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => {
-                    audioSynth.setThrustRumble(0);
-                    audioSynth.playSelect();
-                    setAppView('title');
-                  }}
-                  className="flex items-center gap-1 border border-slate-700 bg-slate-900/90 px-2.5 py-1 text-xs font-medium text-slate-300 hover:border-cyan-400 hover:text-white transition-colors cursor-pointer"
-                  title="Return to Orbitarium Homepage"
-                >
-                  <ArrowLeft className="h-3.5 w-3.5" />
-                  <span>Home</span>
-                </button>
-
-                <div className="flex items-center gap-2">
-                  <Orbit className="h-4 w-4 text-cyan-400" />
-                  <span className="font-display text-base font-black tracking-wider text-white">
-                    ORBITARIUM
-                  </span>
-                </div>
+        <div className="relative h-screen w-screen overflow-hidden flex flex-col bg-[#020617]">
+          <header className="shrink-0 z-30 flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 bg-[#070b15]/95 px-4 py-2">
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  audioSynth.playSelect();
+                  setAppView('title');
+                }}
+                className="flex items-center gap-1.5 border border-slate-700 bg-slate-900 px-2.5 py-1.5 text-xs font-medium text-slate-200 hover:border-cyan-400 hover:text-cyan-300 transition-colors cursor-pointer"
+              >
+                <Home className="h-3.5 w-3.5" />
+                <span>Home</span>
+              </button>
+              <div className="text-xs font-mono-tab uppercase tracking-wider text-cyan-300 font-bold">
+                ORBITARIUM · Interactive Flight Simulator
               </div>
+              <span className="hidden md:inline text-[11px] text-slate-400">
+                Launch → Orbit Maneuvers &amp; Canadarm → Debris/Solar Hazards → Ground Pass Link
+              </span>
+            </div>
 
-              {/* Center: Connected 4-Phase Journey Breadcrumb */}
-              <div className="hidden md:flex items-center gap-1.5 text-xs font-semibold">
-                {[
-                  { id: 'briefing', label: 'Briefing' },
-                  { id: 'launch', label: '1. Launch' },
-                  { id: 'orbit', label: '2. Orbit Mission' },
-                  { id: 'beamdown', label: '3. Beam Data' },
-                  { id: 'finale', label: '4. Finale' },
-                ].map((step, idx) => {
-                  const activePhase =
-                    unifiedSnapshot.phase === 'transition_orbit' ? 'launch' : unifiedSnapshot.phase;
-                  const active = activePhase === step.id;
-                  return (
-                    <div key={step.id} className="flex items-center gap-1.5">
-                      {idx > 0 && <span className="text-slate-600">→</span>}
-                      <span
-                        className={`px-2 py-0.5 whitespace-nowrap ${
-                          active
-                            ? 'bg-cyan-400 text-slate-950 font-bold'
-                            : 'text-slate-400'
-                        }`}
-                      >
-                        {step.label}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/* Right Controls: Change Mission, Sound, Space Words */}
-              <div className="flex items-center gap-2 shrink-0">
-                <span className="hidden lg:inline text-xs font-medium text-cyan-300 mr-1">
-                  {UNIFIED_MISSIONS.find((m) => m.id === unifiedSnapshot.missionId)?.title}
-                </span>
-
-                {unifiedSnapshot.phase !== 'briefing' && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      audioSynth.playSelect();
-                      setBriefingRequest((prev) => ({
-                        phase: 'briefing',
-                        nonce: (prev?.nonce ?? 0) + 1,
-                      }));
-                    }}
-                    className="flex items-center gap-1 border border-slate-700 bg-slate-900/90 px-2.5 py-1 text-xs font-semibold text-slate-200 hover:border-cyan-400 hover:text-white cursor-pointer whitespace-nowrap"
-                  >
-                    <RotateCcw className="h-3.5 w-3.5" />
-                    <span>Missions</span>
-                  </button>
-                )}
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    const next = !muted;
-                    audioSynth.setMuted(next);
-                    setMuted(next);
-                  }}
-                  className="p-1.5 border border-slate-800 bg-slate-900/70 text-slate-300 hover:text-white cursor-pointer"
-                  title={muted ? 'Unmute Audio' : 'Mute Audio'}
-                >
-                  {muted ? <VolumeX className="h-3.5 w-3.5" /> : <Volume2 className="h-3.5 w-3.5 text-cyan-400" />}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setShowDictionaryModal(true)}
-                  className="flex items-center gap-1 border border-cyan-500/40 bg-cyan-950/30 px-2.5 py-1 text-xs font-semibold text-cyan-300 hover:bg-cyan-900/50 transition-colors cursor-pointer"
-                >
-                  <BookOpen className="h-3.5 w-3.5" />
-                  <span className="hidden sm:inline">Dictionary</span>
-                </button>
-              </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  audioSynth.playSelect();
+                  setUnifiedPhaseReq({ phase: 'briefing', nonce: Date.now() });
+                }}
+                className="flex items-center gap-1.5 border border-slate-700 bg-slate-900 px-2.5 py-1.5 text-xs font-medium text-slate-200 hover:border-amber-400 hover:text-amber-300 transition-colors cursor-pointer"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                <span>Mission Select</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowDictionaryModal(true)}
+                className="flex items-center gap-1.5 border border-slate-700 bg-slate-900 px-2.5 py-1.5 text-xs font-medium text-slate-200 hover:border-cyan-400 hover:text-cyan-300 transition-colors cursor-pointer"
+              >
+                <BookOpen className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Dictionary</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  audioSynth.playSelect();
+                  setAppView('classic-hangar');
+                  setClassicPhase('briefing');
+                }}
+                className="flex items-center gap-1.5 bg-cyan-500 px-3 py-1.5 text-xs font-bold text-slate-950 hover:bg-cyan-400 transition-colors cursor-pointer"
+              >
+                <Rocket className="h-3.5 w-3.5" />
+                <span>3D Systems Designer</span>
+              </button>
             </div>
           </header>
 
-          <main className="relative flex-1 min-h-0 w-full overflow-hidden">
+          <div className="relative flex-1 min-h-0">
             <UnifiedMissionCanvas
               onSnapshotChange={setUnifiedSnapshot}
-              externalPhaseRequest={briefingRequest}
+              externalPhaseRequest={unifiedPhaseReq}
             />
-          </main>
+          </div>
         </div>
       )}
 
-      {/* VIEW 3: CLASSIC 3D TEAM HANGAR (1–4 Player Co-Op & Competitive Rooms) */}
+      {/* VIEW 2: UNIFIED 3D MISSION DESIGN HANGAR (Solo & 1–4 Player Co-Op / Competitive Rooms) */}
       {appView === 'classic-hangar' && (
         <div className="relative h-screen w-screen overflow-hidden">
           <SpacecraftScene
@@ -1601,6 +1686,12 @@ export default function App() {
               selectedSoloRole={soloRole}
               onSelectSoloRole={setSoloRole}
               onSelectDifficulty={(d) => handleUpdateClassicConfig({ difficulty: d }, `Difficulty: ${d}`)}
+              onSelectModelMode={(mode) =>
+                handleUpdateClassicConfig(
+                  { modelMode: mode },
+                  mode === 'simplified' ? 'Simplified Spacecraft Model' : 'Realistic Spacecraft Model',
+                )
+              }
               onSelectObjective={(objectiveId) => {
                 const obj = OBJECTIVES.find((o) => o.id === objectiveId);
                 handleUpdateClassicConfig(
@@ -1705,10 +1796,58 @@ export default function App() {
               activeAnomaly={activeAnomaly}
               resolvedCount={resolvedAnomalyIds.length}
               totalAnomalies={classicAnomalies.length}
+              hullPct={simHullPct}
+              batteryPct={simBatteryPct}
+              bufferUsedGB={simBufferUsedGB}
+              bufferCapGB={classicParts.avionics.dataBufferGB}
+              inEclipse={((classicSimProgress * 5) % 1) >= 1 - Math.max(0.14, classicParts.orbit.eclipseFraction)}
+              earthPassOpen={((classicSimProgress * 4.5 + 0.28) % 1) < 0.45}
+              powerMode={simPowerMode}
+              compressionOn={simCompressionOn}
+              lastEventSummary={simLastEvent}
+              onChangePowerMode={(mode) => {
+                audioSynth.playSelect();
+                setSimPowerMode(mode);
+                setSimLastEvent(
+                  mode === 'safe'
+                    ? 'Power Bus set to Safe Mode (Shadow survival).'
+                    : mode === 'balanced'
+                      ? 'Power Bus set to Balanced draw.'
+                      : 'Power Bus set to Full Science.',
+                );
+              }}
+              onToggleCompression={() => {
+                audioSynth.playSelect();
+                setSimCompressionOn((c) => {
+                  const next = !c;
+                  setSimLastEvent(next ? 'Data Compression enabled (-35% buffer fill rate).' : 'Data Compression turned off.');
+                  return next;
+                });
+              }}
+              onFlushBuffer={() => {
+                const earthOpen = ((classicSimProgress * 4.5 + 0.28) % 1) < 0.45;
+                if (!earthOpen || simBufferUsedGB < 2) {
+                  audioSynth.playAlert();
+                  return;
+                }
+                audioSynth.playSuccess();
+                const flushed = Math.min(simBufferUsedGB, 45);
+                setSimBufferUsedGB((b) => Math.max(0, b - flushed));
+                setSimFlushedGB((f) => f + flushed);
+                setSimLastEvent(`Beamed ${flushed.toFixed(0)} GB of science cleanly to Earth!`);
+              }}
               onToggleSpeed={() => setClassicSimSpeed((s) => (s === 1 ? 2 : 1))}
               onResolveAnomaly={(choice: AnomalyChoice) => {
                 if (!activeAnomaly) return;
-                audioSynth.playSelect();
+                const damage = choice.hullDamage ?? 0;
+                if (choice.isHazardous || damage > 0) {
+                  audioSynth.playAlert();
+                  setSimWrongChoices((w) => w + 1);
+                  setSimHullPct((h) => Math.max(0, h - damage));
+                } else {
+                  audioSynth.playSuccess();
+                }
+                setSimLastEvent(choice.detail);
                 setChosenActions((prev) => [
                   ...prev,
                   {
@@ -1818,6 +1957,8 @@ export default function App() {
         classicConfig={classicConfig}
         classicTelemetry={classicTelemetry}
         activeAnomalyTitle={activeAnomaly?.title || null}
+        liveFlightSummary={simLastEvent}
+        lastOutcomeSummary={outcome?.failureSummary || (outcome ? `Grade ${outcome.grade} (${outcome.totalScore}/500)` : null)}
         unifiedSnapshot={unifiedSnapshot}
         onOpenDictionary={() => setShowDictionaryModal(true)}
       />

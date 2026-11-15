@@ -33,6 +33,7 @@ import {
   SHIELDING_SYSTEMS,
 } from '../data/catalog';
 import { getCatalogParts } from '../engine/physics';
+import { ResourceFlowMap } from './ResourceFlowMap';
 import type {
   BuilderCategory,
   CameraPreset,
@@ -149,18 +150,23 @@ export function Phase2AssemblyBay({
     <>
       {/* Left-Side Live Visual Resource HUD */}
       <aside className="pointer-events-auto fixed top-[62px] left-3 z-20 w-[300px] sm:w-[325px] border border-slate-800 bg-[#080c15] p-3.5 shadow-2xl space-y-2.5">
-        <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-          <div>
-            <div className="text-[10px] font-mono-tab uppercase tracking-wider text-cyan-400">
-              Phase 2 · Live Resource Gauges
+        <div className="border-b border-slate-800 pb-2 space-y-1">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-[10px] font-mono-tab uppercase tracking-wider text-cyan-400">
+                Phase 2 · Live Resource Gauges
+              </div>
+              <div className="text-xs font-semibold text-white">
+                Science Score Potential: <span className="font-mono-tab text-cyan-300">{telemetry.scienceReturnPotential}/100</span>
+              </div>
             </div>
-            <div className="text-xs font-semibold text-white">
-              Science Score Potential: <span className="font-mono-tab text-cyan-300">{telemetry.scienceReturnPotential}/100</span>
-            </div>
+            <span className="font-mono-tab text-[11px] text-slate-400">
+              {parts.objective.minScienceValue} min
+            </span>
           </div>
-          <span className="font-mono-tab text-[11px] text-slate-400">
-            {parts.objective.minScienceValue} min
-          </span>
+          <div className="text-[10px] font-mono-tab text-amber-300/95">
+            Critical Here: {parts.objective.criticalResources.join(' · ')}
+          </div>
         </div>
 
         {/* 1. Budget ($M) */}
@@ -228,7 +234,7 @@ export function Phase2AssemblyBay({
           </div>
         </div>
 
-        {/* Active Synergies / Quick Fix Notice */}
+        {/* Active Synergies / Plain-Language Trade-off Notice */}
         {telemetry.synergies.length > 0 && (
           <div className="border border-emerald-500/35 bg-emerald-950/20 px-2.5 py-1.5 text-[11px] text-emerald-200 flex items-center gap-1.5">
             <Sparkles className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
@@ -236,27 +242,42 @@ export function Phase2AssemblyBay({
           </div>
         )}
 
-        {telemetry.advisories.length > 0 && parts.difficulty.showQuickFixes && telemetry.advisories[0].quickFix && (
-          <div className="border border-amber-500/40 bg-amber-950/25 p-2 space-y-1.5">
-            <div className="text-[11px] text-amber-200 leading-snug">
+        {telemetry.advisories.length > 0 && (
+          <div className="border border-amber-500/40 bg-amber-950/25 p-2.5 space-y-1.5">
+            <div className="text-[11px] font-semibold text-amber-200 leading-snug">
               {telemetry.advisories[0].message}
             </div>
-            <button
-              type="button"
-              onClick={() =>
-                onUpdateConfig(
-                  telemetry.advisories[0].quickFix!.patch,
-                  `Applied fix: ${telemetry.advisories[0].quickFix!.label}`,
-                )
-              }
-              className="flex items-center gap-1 bg-amber-400 px-2.5 py-1 text-[11px] font-semibold text-slate-950 hover:bg-amber-300 cursor-pointer"
-            >
-              <Wrench className="h-3 w-3" />
-              {telemetry.advisories[0].quickFix.label}
-            </button>
+            <p className="text-[10px] text-slate-300 leading-snug">
+              Why: {telemetry.advisories[0].plainTerms}
+            </p>
+            {parts.difficulty.showQuickFixes && telemetry.advisories[0].quickFix && (
+              <button
+                type="button"
+                onClick={() =>
+                  onUpdateConfig(
+                    telemetry.advisories[0].quickFix!.patch,
+                    `Applied fix: ${telemetry.advisories[0].quickFix!.label}`,
+                  )
+                }
+                className="flex items-center gap-1 bg-amber-400 px-2.5 py-1 text-[11px] font-semibold text-slate-950 hover:bg-amber-300 cursor-pointer"
+              >
+                <Wrench className="h-3 w-3" />
+                {telemetry.advisories[0].quickFix.label}
+              </button>
+            )}
           </div>
         )}
       </aside>
+
+      {/* Top-Center Connected Mission Chain Visualizer (Desktop Hangar) */}
+      <div className="pointer-events-auto fixed top-[62px] left-[348px] right-[390px] z-20 hidden xl:block">
+        <ResourceFlowMap
+          config={config}
+          telemetry={telemetry}
+          onSelectCategory={onChangeCategory}
+          compact
+        />
+      </div>
 
       {/* Plain-English Trade-Off Popup (Triggered when player swaps/adds hardware) */}
       {tradeOffPopup && (
@@ -371,17 +392,32 @@ export function Phase2AssemblyBay({
                   Click Parts to Build Live in 3D
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={onToggleCollapse}
-                title="Minimize Builder"
-                className="p-1 text-slate-400 hover:text-white cursor-pointer"
-              >
-                <ChevronRight className="h-4 w-4" />
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() =>
+                    onUpdateConfig(
+                      { modelMode: parts.modelMode === 'simplified' ? 'realistic' : 'simplified' },
+                      parts.modelMode === 'simplified' ? 'Realistic Model' : 'Simplified Model',
+                    )
+                  }
+                  className="border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-mono-tab text-cyan-300 hover:border-cyan-400 cursor-pointer whitespace-nowrap"
+                  title="Switch between Simplified core components and Realistic full subsystems"
+                >
+                  {parts.modelMode === 'simplified' ? 'Simplified' : 'Realistic'}
+                </button>
+                <button
+                  type="button"
+                  onClick={onToggleCollapse}
+                  title="Minimize Builder"
+                  className="p-1 text-slate-400 hover:text-white cursor-pointer"
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </button>
+              </div>
             </div>
 
-            <div className="grid grid-cols-4 gap-1">
+            <div className={`grid gap-1 ${tabs.length === 5 ? 'grid-cols-5' : 'grid-cols-4'}`}>
               {tabs.map((t) => {
                 const Icon = t.icon;
                 const active = activeCategory === t.id;
@@ -571,7 +607,7 @@ export function Phase2AssemblyBay({
                     );
                   })}
 
-                  {parts.power.kind === 'solar' && (
+                  {parts.power.kind === 'solar' && parts.modelMode === 'realistic' && (
                     <div className="border border-slate-800 bg-slate-900/50 p-2.5">
                       <div className="flex justify-between text-[11px] font-mono-tab text-slate-300 mb-1">
                         <span>Solar Wing Size</span>
@@ -595,36 +631,42 @@ export function Phase2AssemblyBay({
                   )}
                 </section>
 
-                <section className="space-y-2">
-                  <div className="text-[11px] font-mono-tab uppercase tracking-wider text-slate-400 flex items-center gap-1">
-                    <BatteryCharging className="h-3.5 w-3.5 text-emerald-400" />
-                    2. Eclipse Batteries
+                {parts.modelMode === 'realistic' ? (
+                  <section className="space-y-2">
+                    <div className="text-[11px] font-mono-tab uppercase tracking-wider text-slate-400 flex items-center gap-1">
+                      <BatteryCharging className="h-3.5 w-3.5 text-emerald-400" />
+                      2. Eclipse Batteries
+                    </div>
+                    {BATTERY_SYSTEMS.map((bt) => {
+                      const selected = config.batteryId === bt.id;
+                      return (
+                        <button
+                          key={bt.id}
+                          type="button"
+                          onClick={() => onUpdateConfig({ batteryId: bt.id }, bt.name)}
+                          className={`w-full text-left border p-2.5 transition-colors cursor-pointer ${
+                            selected
+                              ? 'border-cyan-400 bg-cyan-950/35'
+                              : 'border-slate-800 bg-slate-900/60 hover:border-slate-600'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between text-xs font-bold text-white">
+                            <span>{bt.name}</span>
+                            <span className="font-mono-tab text-[11px] text-amber-300">${bt.costM}M</span>
+                          </div>
+                          <div className="mt-0.5 font-mono-tab text-[10px] text-cyan-300">
+                            {bt.capacityWh} Wh · {bt.massKg} kg
+                          </div>
+                          <p className="mt-1 text-[11px] text-slate-400 leading-snug">{bt.description}</p>
+                        </button>
+                      );
+                    })}
+                  </section>
+                ) : (
+                  <div className="border border-slate-800 bg-slate-900/40 p-3 text-[11px] text-slate-400">
+                    Simplified Mode uses a balanced baseline battery pack. Click <strong className="text-cyan-300">Simplified</strong> above to switch to Realistic Mode and customize battery vaults.
                   </div>
-                  {BATTERY_SYSTEMS.map((bt) => {
-                    const selected = config.batteryId === bt.id;
-                    return (
-                      <button
-                        key={bt.id}
-                        type="button"
-                        onClick={() => onUpdateConfig({ batteryId: bt.id }, bt.name)}
-                        className={`w-full text-left border p-2.5 transition-colors cursor-pointer ${
-                          selected
-                            ? 'border-cyan-400 bg-cyan-950/35'
-                            : 'border-slate-800 bg-slate-900/60 hover:border-slate-600'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between text-xs font-bold text-white">
-                          <span>{bt.name}</span>
-                          <span className="font-mono-tab text-[11px] text-amber-300">${bt.costM}M</span>
-                        </div>
-                        <div className="mt-0.5 font-mono-tab text-[10px] text-cyan-300">
-                          {bt.capacityWh} Wh · {bt.massKg} kg
-                        </div>
-                        <p className="mt-1 text-[11px] text-slate-400 leading-snug">{bt.description}</p>
-                      </button>
-                    );
-                  })}
-                </section>
+                )}
               </>
             )}
 
@@ -660,61 +702,67 @@ export function Phase2AssemblyBay({
                   })}
                 </section>
 
-                <section className="space-y-2">
-                  <div className="text-[11px] font-mono-tab uppercase tracking-wider text-slate-400 flex items-center gap-1">
-                    <Cpu className="h-3.5 w-3.5 text-cyan-400" />
-                    2. Flight Computer &amp; Star Aiming
-                  </div>
-                  {AVIONICS_SYSTEMS.map((av) => {
-                    const selected = config.avionicsId === av.id;
-                    return (
-                      <button
-                        key={av.id}
-                        type="button"
-                        onClick={() => onUpdateConfig({ avionicsId: av.id }, av.name)}
-                        className={`w-full text-left border p-2.5 transition-colors cursor-pointer ${
-                          selected
-                            ? 'border-cyan-400 bg-cyan-950/35'
-                            : 'border-slate-800 bg-slate-900/60 hover:border-slate-600'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between text-xs font-bold text-white">
-                          <span>{av.name}</span>
-                          <span className="font-mono-tab text-[11px] text-amber-300">${av.costM}M</span>
-                        </div>
-                        <div className="mt-0.5 font-mono-tab text-[10px] text-cyan-300">
-                          {av.dataBufferGB} GB Memory · {av.powerDrawW}W · {av.massKg} kg
-                        </div>
-                        <p className="mt-1 text-[11px] text-slate-400 leading-snug">{av.description}</p>
-                      </button>
-                    );
-                  })}
+                {parts.modelMode === 'realistic' ? (
+                  <section className="space-y-2">
+                    <div className="text-[11px] font-mono-tab uppercase tracking-wider text-slate-400 flex items-center gap-1">
+                      <Cpu className="h-3.5 w-3.5 text-cyan-400" />
+                      2. Flight Computer &amp; Star Aiming
+                    </div>
+                    {AVIONICS_SYSTEMS.map((av) => {
+                      const selected = config.avionicsId === av.id;
+                      return (
+                        <button
+                          key={av.id}
+                          type="button"
+                          onClick={() => onUpdateConfig({ avionicsId: av.id }, av.name)}
+                          className={`w-full text-left border p-2.5 transition-colors cursor-pointer ${
+                            selected
+                              ? 'border-cyan-400 bg-cyan-950/35'
+                              : 'border-slate-800 bg-slate-900/60 hover:border-slate-600'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between text-xs font-bold text-white">
+                            <span>{av.name}</span>
+                            <span className="font-mono-tab text-[11px] text-amber-300">${av.costM}M</span>
+                          </div>
+                          <div className="mt-0.5 font-mono-tab text-[10px] text-cyan-300">
+                            {av.dataBufferGB} GB Memory · {av.powerDrawW}W · {av.massKg} kg
+                          </div>
+                          <p className="mt-1 text-[11px] text-slate-400 leading-snug">{av.description}</p>
+                        </button>
+                      );
+                    })}
 
-                  {ADCS_SYSTEMS.map((ad) => {
-                    const selected = config.adcsId === ad.id;
-                    return (
-                      <button
-                        key={ad.id}
-                        type="button"
-                        onClick={() => onUpdateConfig({ adcsId: ad.id }, ad.name)}
-                        className={`w-full text-left border p-2.5 transition-colors cursor-pointer ${
-                          selected
-                            ? 'border-cyan-400 bg-cyan-950/35'
-                            : 'border-slate-800 bg-slate-900/60 hover:border-slate-600'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between text-xs font-bold text-white">
-                          <span>{ad.name}</span>
-                          <span className="font-mono-tab text-[11px] text-amber-300">${ad.costM}M</span>
-                        </div>
-                        <div className="mt-0.5 font-mono-tab text-[10px] text-cyan-300">
-                          {ad.pointingAccuracyArcsec}&quot; Aim · {ad.powerDrawW}W · {ad.massKg} kg
-                        </div>
-                        <p className="mt-1 text-[11px] text-slate-400 leading-snug">{ad.description}</p>
-                      </button>
-                    );
-                  })}
-                </section>
+                    {ADCS_SYSTEMS.map((ad) => {
+                      const selected = config.adcsId === ad.id;
+                      return (
+                        <button
+                          key={ad.id}
+                          type="button"
+                          onClick={() => onUpdateConfig({ adcsId: ad.id }, ad.name)}
+                          className={`w-full text-left border p-2.5 transition-colors cursor-pointer ${
+                            selected
+                              ? 'border-cyan-400 bg-cyan-950/35'
+                              : 'border-slate-800 bg-slate-900/60 hover:border-slate-600'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between text-xs font-bold text-white">
+                            <span>{ad.name}</span>
+                            <span className="font-mono-tab text-[11px] text-amber-300">${ad.costM}M</span>
+                          </div>
+                          <div className="mt-0.5 font-mono-tab text-[10px] text-cyan-300">
+                            {ad.pointingAccuracyArcsec}&quot; Aim · {ad.powerDrawW}W · {ad.massKg} kg
+                          </div>
+                          <p className="mt-1 text-[11px] text-slate-400 leading-snug">{ad.description}</p>
+                        </button>
+                      );
+                    })}
+                  </section>
+                ) : (
+                  <div className="border border-slate-800 bg-slate-900/40 p-3 text-[11px] text-slate-400">
+                    Simplified Mode keeps flight computer memory and star-tracker aiming automatic. Switch to <strong className="text-cyan-300">Realistic</strong> above to tune them directly.
+                  </div>
+                )}
               </>
             )}
 

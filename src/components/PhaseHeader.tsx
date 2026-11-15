@@ -179,16 +179,15 @@ export function PhaseHeader({
         {phase === 'planner' && (
           <button
             type="button"
-            disabled={!telemetry.launchReady}
             onClick={onLaunchMission}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap ${
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer ${
               telemetry.launchReady
-                ? 'bg-emerald-500 text-slate-950 hover:bg-emerald-400 cursor-pointer'
-                : 'border border-rose-500/60 bg-rose-950/60 text-rose-300 cursor-not-allowed'
+                ? 'bg-emerald-500 text-slate-950 hover:bg-emerald-400'
+                : 'border border-amber-400/80 bg-amber-950/60 text-amber-200 hover:bg-amber-900/60'
             }`}
           >
             <Rocket className="h-3.5 w-3.5" />
-            <span>{telemetry.launchReady ? 'Launch Mission' : 'Fix Check First'}</span>
+            <span>{telemetry.launchReady ? 'Launch Mission' : 'Test Launch (Flagged)'}</span>
           </button>
         )}
       </div>

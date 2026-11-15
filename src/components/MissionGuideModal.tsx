@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { BookOpen, Compass, Radio, Rocket, Sun, Users, X, Zap } from 'lucide-react';
+import { BookOpen, Compass, ExternalLink, Radio, Rocket, Sun, Users, X, Zap } from 'lucide-react';
 import { CONCEPT_GUIDE, DIFFICULTY_MODES, ROLE_META } from '../data/catalog';
+import { OFFICIAL_REFERENCES } from '../data/references';
 import type { DifficultyLevel, EngineeringRole } from '../types/mission';
 
 interface MissionGuideModalProps {
@@ -468,6 +469,34 @@ export function MissionGuideModal({
                       );
                     },
                   )}
+                </div>
+              </section>
+
+              {/* Official NASA & CSA Reference Sources */}
+              <section>
+                <div className="flex items-center gap-2 text-xs font-mono-tab uppercase tracking-wider text-slate-400 mb-2.5">
+                  <ExternalLink className="h-3.5 w-3.5 text-cyan-400" />
+                  Official NASA &amp; Canadian Space Agency References
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
+                  {OFFICIAL_REFERENCES.map((ref) => (
+                    <a
+                      key={ref.id}
+                      href={ref.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="block border border-slate-800 bg-slate-900/60 p-3 hover:border-cyan-400 transition-colors"
+                    >
+                      <div className="flex items-center justify-between gap-2 text-[10px] font-mono-tab uppercase tracking-wider text-cyan-400">
+                        <span>{ref.agency} Official Source</span>
+                        <ExternalLink className="h-3 w-3 shrink-0" />
+                      </div>
+                      <div className="mt-1 text-xs font-bold text-white">{ref.title}</div>
+                      <p className="mt-1 text-[11px] leading-relaxed text-slate-400">
+                        {ref.subtitle}
+                      </p>
+                    </a>
+                  ))}
                 </div>
               </section>
             </div>
